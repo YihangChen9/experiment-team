@@ -1,0 +1,38 @@
+name: cuda-visible-runtime-docker
+
+resources:
+  infra: ssh/local-gpu
+  cpus: 4+
+  accelerators: H100:1
+  image_id: docker:yangtzeailab/autoresearch-r3l:cuda12.9-py310
+  use_spot: false
+  autostop:
+    idle_minutes: 20
+    down: true
+
+config:
+  ssh:
+    pod_config:
+      spec:
+        containers:
+          - name: ray-node
+            imagePullPolicy: IfNotPresent
+
+workdir: qwen_inference
+
+setup: |
+  source /etc/profile.d/conda-env.sh
+  python -V
+  python - <<'PY'
+  import torch
+  print("setup_torch:", torch.__version__)
+  print("setup_torch_cuda_version:", torch.version.cuda)
+  PY
+  nvidia-smi
+
+run: |
+  source /etc/profile.d/conda-env.sh
+  echo "before CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>}"
+  export CUDA_VISIBLE_DEVICES=0
+  echo "after CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
+  python cuda_visible_test.py

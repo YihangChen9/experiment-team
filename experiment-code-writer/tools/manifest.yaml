@@ -1,0 +1,7 @@
+# Tool manifest — this talent uses host Read/Write/Bash to write
+# experiment.py + analysis.py. No MCP servers or custom tools needed.
+
+# builtin_tools:
+#   - Read
+#   - Write
+#   - Bash

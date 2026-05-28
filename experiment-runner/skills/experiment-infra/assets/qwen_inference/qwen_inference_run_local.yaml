@@ -1,0 +1,46 @@
+name: qwen-inference-run-local
+
+resources:
+  cpus: 4+
+  accelerators: H100:1
+
+setup: |
+  source /home/zsgpu/miniconda3/bin/activate
+  conda activate r3l
+  cd qwen_inference
+  python -V
+  python - <<'PY'
+  import importlib.util
+  import subprocess
+  import sys
+
+  missing = [
+      package
+      for package, module in (
+          ("transformers>=4.40", "transformers"),
+          ("accelerate", "accelerate"),
+      )
+      if importlib.util.find_spec(module) is None
+  ]
+  if missing:
+      subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
+  PY
+  python - <<'PY'
+  import importlib.metadata as md
+  import torch
+
+  print("torch:", torch.__version__)
+  print("torch_cuda_version:", torch.version.cuda)
+  for package in ("transformers", "accelerate"):
+      try:
+          print(f"{package}: {md.version(package)}")
+      except md.PackageNotFoundError:
+          print(f"{package}: not installed")
+  PY
+  nvidia-smi
+  test -d /mnt/data0/hf_models/Qwen/Qwen2.5-7B-Instruct
+
+run: |
+  export HF_HUB_OFFLINE=1
+  export TRANSFORMERS_OFFLINE=1
+  python qwen_inference_test.py

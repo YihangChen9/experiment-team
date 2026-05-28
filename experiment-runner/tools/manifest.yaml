@@ -1,0 +1,7 @@
+# Tool manifest — this talent invokes the bundled fast_*.sh scripts via
+# host Bash. No MCP servers or custom tools needed.
+
+# builtin_tools:
+#   - Read
+#   - Write
+#   - Bash

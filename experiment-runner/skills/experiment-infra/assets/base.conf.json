@@ -1,0 +1,21 @@
+{
+  "gpu": "H100:1",
+  "data_version": "placeholder",
+  "random_seed": 42,
+  "estimated_hours": 2.0,
+  "workdir": "",
+  "log_dir": "logs",
+  "run_local": true,
+  "save_log_to_workdir": true,
+  "use_spot": true,
+  "local_use_bash": true,
+  "strict_provenance": true,
+  "git_commit": "",
+  "dataset_s3": "",
+  "output_s3": "",
+  "resume_from": "",
+  "cloud": "ssb",
+  "config": {},
+  "yaml_path": "",
+  "run_command": ""
+}

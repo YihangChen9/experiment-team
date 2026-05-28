@@ -1,0 +1,15 @@
+# experiments.yaml — run the remote `experiments/` training script (uv run train.py)
+
+name: experiments
+
+resources:
+    cpus: 4+
+    accelerators: H100:1
+
+setup: |
+    source /home/zsgpu/miniconda3/bin/activate
+    cd experiments
+    uv sync
+
+run: |
+    uv run train.py

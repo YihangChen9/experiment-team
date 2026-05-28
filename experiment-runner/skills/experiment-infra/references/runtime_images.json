@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "default_image": "vllm_w_flashattn",
+  "images": {
+    "autoresearch_r3l": {
+      "description": "Base R3L SkyPilot runtime with CUDA 12.9, Python 3.10, PyTorch 2.8.0, and common research packages.",
+      "image_ref": "yangtzeailab/autoresearch-r3l:cuda12.9-py310",
+      "sky_image_id": "docker:yangtzeailab/autoresearch-r3l:cuda12.9-py310",
+      "build_context": "runtime-images/r3l-conda",
+      "docker_build": "docker build -t yangtzeailab/autoresearch-r3l:cuda12.9-py310 runtime-images/r3l-conda",
+      "tar_path": "/mnt/data0/ys/images/autoresearch-r3l.tar",
+      "k3s_import": "sudo k3s ctr -n k8s.io images import /mnt/data0/ys/images/autoresearch-r3l.tar",
+      "yaml_resources": {
+        "image_id": "docker:yangtzeailab/autoresearch-r3l:cuda12.9-py310"
+      },
+      "local_k3s_pod_config": {
+        "ssh": {
+          "pod_config": {
+            "spec": {
+              "containers": [
+                {
+                  "name": "ray-node",
+                  "imagePullPolicy": "Never"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "vllm_w_flashattn": {
+      "description": "R3L-derived SkyPilot runtime with vLLM and FlashAttention preinstalled for inference workloads.",
+      "image_ref": "yangtzeailab/vllm_w_flashattn:cuda12.9-py310",
+      "sky_image_id": "docker:yangtzeailab/vllm_w_flashattn:cuda12.9-py310",
+      "base_image_ref": "yangtzeailab/autoresearch-r3l:cuda12.9-py310",
+      "build_context": "runtime-images/vllm_w_flashattn",
+      "docker_build": "docker build --build-arg BASE_IMAGE=yangtzeailab/autoresearch-r3l:cuda12.9-py310 -t yangtzeailab/vllm_w_flashattn:cuda12.9-py310 runtime-images/vllm_w_flashattn",
+      "tar_path": "/mnt/data0/ys/images/vllm_w_flashattn-cuda12.9-py310.tar",
+      "docker_save": "docker save yangtzeailab/vllm_w_flashattn:cuda12.9-py310 -o /mnt/data0/ys/images/vllm_w_flashattn-cuda12.9-py310.tar",
+      "k3s_import": "sudo k3s ctr -n k8s.io images import /mnt/data0/ys/images/vllm_w_flashattn-cuda12.9-py310.tar",
+      "python_packages": {
+        "flash_attn": "2.8.3",
+        "transformers": "4.57.6",
+        "accelerate": "1.13.0",
+        "vllm": "0.11.0"
+      },
+      "yaml_resources": {
+        "image_id": "docker:yangtzeailab/vllm_w_flashattn:cuda12.9-py310"
+      },
+      "local_k3s_pod_config": {
+        "ssh": {
+          "pod_config": {
+            "spec": {
+              "containers": [
+                {
+                  "name": "ray-node",
+                  "imagePullPolicy": "Never"
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

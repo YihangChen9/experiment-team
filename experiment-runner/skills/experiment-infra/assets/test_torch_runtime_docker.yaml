@@ -1,0 +1,45 @@
+# Remote SkyPilot container runtime smoke test.
+#
+# User-side prereq: torch_test.py exists in the assigned remote workspace. The bundled sample can be pushed with:
+#   $SKILL_DIR/scripts/fast_push_code.sh \
+#     $SKILL_DIR/assets/torch_test.py torch_test.py
+
+name: test-torch-runtime-docker
+
+# Optional cluster reuse: after fast_query_budget.sh, pick one of
+# resources.sky_clusters.clusters[].name and uncomment:
+# infra_cluster_name: alice_scaling-laws_run_489abf15c598
+
+resources:
+  infra: ssh/local-gpu
+  cpus: 4+
+  accelerators: H100:1
+  image_id: docker:yangtzeailab/autoresearch-r3l:cuda12.9-py310
+  use_spot: false
+  # Optional infra-managed autodown timer. If infra_cluster_name is set,
+  # each completed job refreshes this reused cluster's timer.
+  autostop:
+    idle_minutes: 20
+    down: true
+
+config:
+  ssh:
+    pod_config:
+      spec:
+        containers:
+          - name: ray-node
+            imagePullPolicy: IfNotPresent
+
+# Upload the assigned remote workspace to /root/sky_workdir.
+# Relative paths are resolved by the remote API under that assigned workspace.
+workdir: .
+
+setup: |
+  source /etc/profile.d/conda-env.sh
+  python -V
+  pip show torch || true
+  nvidia-smi
+
+run: |
+  source /etc/profile.d/conda-env.sh
+  python torch_test.py

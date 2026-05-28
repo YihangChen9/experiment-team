@@ -1,0 +1,21 @@
+{
+  "gpu": "H100:1",
+  "data_version": "qwen2.5-7b-instruct-run-local-smoke-test",
+  "random_seed": 42,
+  "estimated_hours": 0.25,
+  "workdir": "",
+  "log_dir": "logs",
+  "run_local": true,
+  "save_log_to_workdir": true,
+  "use_spot": false,
+  "local_use_bash": true,
+  "strict_provenance": false,
+  "git_commit": "",
+  "dataset_s3": "",
+  "output_s3": "",
+  "resume_from": "",
+  "cloud": "ssh",
+  "config": {},
+  "yaml_path": "",
+  "run_command": ""
+}
