@@ -52,41 +52,67 @@ git fetch --depth 1 origin <Commit>
 git checkout <Commit>
 
 # Verify license matches the pin (refuse to proceed on mismatch)
-head -3 LICENSE || (echo "FATAL: pin claims MIT/Apache but no LICENSE file" && exit 2)
+head -3 LICENSE || head -3 LICENSE.md || (echo "FATAL: pin claims MIT/Apache but no LICENSE file" && exit 2)
 
 # Run upstream's own tests on a clean checkout BEFORE patching
-<Test command from pin>     # must exit 0
+<Test command from pin>     # capture exit code; see classification below
 ```
 
-If the upstream test suite fails on a clean checkout (no patches yet),
-the pin is broken — stop and submit a Stage 6 error with the failing
-test output. Do **not** patch on top of a broken baseline.
+**Classify the pre-patch test result** — this is the single most
+mis-handled step:
 
-### Step 0.2 — Apply the patches the pin lists
+| Symptom in stdout | Classification | What to do |
+|---|---|---|
+| `ModuleNotFoundError`, `ImportError`, `pip install` failures, pyarrow/CMake build errors on macOS, missing CUDA, etc. | **Environment failure** — upstream code is fine, your local machine just can't run its tests | **Continue to Step 0.2.** Mark `pretest_status: SKIPPED_ENV` in your receipt. The remote runner will exercise tests on Linux where they pass. |
+| Actual `AssertionError`, `FAILED tests/...`, or any failure from the pin's named test command after a successful import | **Real upstream defect** — the pin is broken | **Stop.** `submit_result(status: error, summary="Stage 6a aborted: pin's upstream tests fail on clean checkout — pin must be amended in Stage 5")` and paste the failing test output. Do not patch a broken baseline. |
+| Exit 0, all tests pass | **Healthy** | Continue. Mark `pretest_status: PASSED`. |
 
-For each row of the `Adaptation surface` table:
+Do **not** invent a third interpretation ("environmental, I'll patch
+to /tmp instead"). Patches always go into the cloned `upstream/`
+directory; only the classification of pre-patch tests changes.
 
-1. Open the named file.
-2. Make the change described, staying within the LOC estimate ±50%.
+### Step 0.2 — Apply the patches the pin lists, **IN PLACE inside upstream/**
+
+For each row of the `Adaptation surface` table, modify the file named
+in the row directly inside the cloned `upstream/` tree. Use the
+`Edit` tool on existing files; use `Write` for new files with the
+**full upstream-relative path** (e.g.
+`upstream/lm_eval/tasks/gsm8k/utils.py`).
+
+**Do NOT** stage patches in `/tmp/stage6_impl/` when a pin exists.
+That path is reserved for the from-scratch exception in Step 0.4.
+Staging patches outside `upstream/` was a historical failure mode —
+the runner then pushes the unpatched upstream/ and your work is
+silently lost.
+
+Rules:
+
+1. Edit the named file in place inside `upstream/`.
+2. Stay within the LOC estimate ±50%.
 3. **Do not modify files not listed in the table.** If you find you
-   need to touch one, stop and surface that to the user via
+   need to touch one, stop and surface that via
    `submit_result(status: error)` — the pin should be amended in
    Stage 5, not in Stage 6.
+4. After all patches: `cd upstream && git add -A && git commit -m "Stage 6 adaptation: <one-liner>"` so reviewers can
+   `git diff <pinned_commit> HEAD` and see exactly what changed.
 
-Commit the patches as a single commit with message
-`Stage 6 adaptation: <one-liner>` so reviewers can `git diff
-<pinned_commit> HEAD` to see exactly what we changed.
-
-### Step 0.3 — Re-run the upstream tests after patching
+### Step 0.3 — Re-run the upstream tests after patching (env-aware)
 
 ```bash
-<Test command from pin>     # must still exit 0 after our patches
+cd upstream && <Test command from pin>
 ```
 
-If any upstream test now fails, your patch broke something. Roll back
-and re-scope until the suite passes. **The upstream extractor /
-scorer / dataset loader is sacred — do not patch them; if you think
-you need to, Stage 5 picked the wrong upstream.**
+Classify the post-patch result with the same table as Step 0.1:
+
+- **PASSED** → continue. Mark `posttest_status: PASSED` in receipt.
+- **SKIPPED_ENV** → continue. Mark `posttest_status: SKIPPED_ENV`.
+  The remote runner will exercise tests on Linux. Document in
+  receipt that local validation was env-blocked.
+- **Real failure (your patch broke something)** → roll the failing
+  patch back, re-scope, and repeat Step 0.2. **The upstream
+  extractor / scorer / dataset loader is sacred — do not patch
+  them; if you think you need to, Stage 5 picked the wrong
+  upstream.**
 
 ### Step 0.4 — If the pin says NO USABLE UPSTREAM FOUND
 
@@ -275,8 +301,23 @@ For each implementation task:
 
 **Writing code locally is not enough.** If you stop here, the
 Stage 6b runner has no code to execute, and the Stage 6a critic
-will REJECT for failed push verification (D4). Every file in
-`/tmp/stage6_impl/<project_id>/` MUST end up on the remote.
+will REJECT for failed push verification (D4). Every file you
+modified (or created) MUST end up on the remote.
+
+### Pin path vs from-scratch path — what gets pushed
+
+- **Pin path (Phase 0.2 ran)** — push the entire `upstream/`
+  directory tree under the per-project prefix. Source root is
+  `<project_workspace>/upstream/`. The runner will then `cd
+  <REMOTE_PREFIX>/upstream/` and invoke the entrypoint named in
+  your receipt (e.g. `lm_eval --model ...`).
+- **From-scratch path (Phase 0.4 ran)** — push the contents of
+  `/tmp/stage6_impl/<project_id>/` under the per-project prefix.
+  The runner will then `cd <REMOTE_PREFIX>/` and invoke
+  `python experiment.py ...`.
+
+Both paths use the same remote-prefix convention (Step 4.1). Pick
+the right source root for your case.
 
 ### Step 4.1 — Choose the **per-project remote subdir**
 
@@ -339,7 +380,19 @@ the failure in the receipt's "Push status" column as `❌ <error>`
 and STOP — the critic will mark D4 as FAIL and trigger retry. Better
 to fail loud here than to ship a missing file.
 
-## Phase 5 — Write the implementation receipt
+## Phase 5 — Write the implementation receipt (MANDATORY, ALWAYS)
+
+**This step is non-negotiable.** The Stage 6b runner reads
+`stage6_implementation_receipt.md` to find the runnable entrypoint;
+without it, 6b reports `BLOCKED: missing receipt` and the entire
+6a → 6b → critic cycle has to restart. Skipping the receipt is
+the single most common failure mode and the Stage 6a critic
+auto-REJECTs on its absence.
+
+You write this file even if a step earlier failed. A receipt
+with `pretest_status: SKIPPED_ENV` and a partial task list is
+still better than no receipt — it tells the runner what state
+the workspace is in, what's pushed, and whether to proceed.
 
 Create `stage6_implementation_receipt.md` in the project workspace.
 Required sections:
@@ -347,11 +400,20 @@ Required sections:
 ```markdown
 # Stage 6a — Implementation Receipt
 
+## 0. Pin status (REQUIRED — fill before anything else)
+- `path_taken`: pin | from-scratch
+- `pretest_status`: PASSED | SKIPPED_ENV | NOT_RUN
+- `posttest_status`: PASSED | SKIPPED_ENV | NOT_RUN
+- If SKIPPED_ENV, paste the first 5 lines of the failing
+  install/import error so the runner knows what's expected to
+  fail on Linux too (vs what was macOS-only).
+
 ## 1. Tasks completed
 For each implementation task from Stage 5 assignments:
   ### TN — <task description verbatim>
   - Spec source: stage5_experiment_designer.md §X
-  - Local file: /tmp/stage6_impl/<filename>.py
+  - Local file: upstream/<sub/path>.py (pin path) OR
+                /tmp/stage6_impl/<filename>.py (from-scratch path)
   - Lines: <N>
   - Remote path: <remote/path>
   - Push verification: ✅ confirmed in fast_query_working_dir output
@@ -391,16 +453,39 @@ sandbox requires gVisor that may not be on remote). Be explicit;
 don't paper over.
 ```
 
-## Phase 6 — Submit
+## Phase 6 — Submit (only after Phase 5 has produced the receipt)
 
 ```
 submit_result(summary="Stage 6a Implementation: <N> files pushed to remote (X lines), spec coverage <K/K>, <gap_count> ambiguities documented. Runner entrypoint: python experiment.py ...")
 ```
 
+Before you call `submit_result`, re-verify by reading the receipt
+back from disk:
+
+```
+read("stage6_implementation_receipt.md")    # must return non-empty content
+```
+
+If this read returns empty / not-found, Phase 5 wasn't actually
+executed — go back and do it. **A submit_result without a
+corresponding receipt on disk is auto-REJECT by Stage 6a critic.**
+
 ## What NOT to do
 
+- **Don't stage pin patches in `/tmp/stage6_impl/`.** When a pin
+  exists (Step 0.1 found `stage5_codebase_pin.md`), patches go
+  **in place inside `upstream/`** — that is the cloned tree the
+  runner pushes to remote. Writing to `/tmp` for the pin path
+  means your work never reaches the runner and 6b reports
+  BLOCKED. The historical failure mode: LLM hits a macOS env
+  error on pre-patch tests, rationalises "tests are
+  environmental, I'll proceed with patches", and then writes
+  every patch to `/tmp` instead of `upstream/`. Don't be that
+  LLM. The env-failure classification (Step 0.1 table) lets you
+  proceed with in-place patching — use it.
 - **Don't stop after writing code locally.** Writing to
-  `/tmp/stage6_impl/` is step ONE. If you don't push to the remote
+  `/tmp/stage6_impl/` (from-scratch path) or to `upstream/`
+  (pin path) is step ONE. If you don't push to the remote
   AND don't write the receipt, the runner has nothing to execute and
   the critic will REJECT for missing push + missing receipt. This
   failure mode has happened before — be the implementer who finishes
