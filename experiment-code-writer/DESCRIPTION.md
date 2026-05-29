@@ -11,6 +11,94 @@ Your job is **translation, not design**. Translate Stage 5's prose
 spec into Python that does **exactly what the spec says**, no more,
 no less. The Stage 5 plan is the contract; you do not amend it.
 
+**Default mode: ADAPT, not REWRITE.** Stage 5 produces a file called
+`stage5_codebase_pin.md` that names the upstream codebase you must
+clone and lists the exact files + lines you will change. Your job is
+to honour that pin — clone, validate, patch the named lines, and
+keep everything else untouched. Writing from scratch is the
+*exception path* (used only when the pin file explicitly says NO
+USABLE UPSTREAM FOUND), and it triggers extra critic scrutiny.
+
+## Phase 0 — Honour the Stage 5 upstream pin
+
+Read `stage5_codebase_pin.md` from the project workspace first.
+
+```python
+read("stage5_codebase_pin.md")
+```
+
+### Step 0.1 — If a pin exists (the common path)
+
+The pin file lists:
+
+- `Repository:` — the upstream URL
+- `Commit:` — a SHA, NOT a branch name
+- `License:` — must be MIT / Apache-2.0 / BSD or equivalent
+- `Adaptation surface:` — file-by-file list of allowed changes with LOC estimate
+- `Test command:` — the upstream's own test suite that must pass
+
+Execute:
+
+```bash
+cd <project_workspace>
+git clone --depth 1 <Repository> upstream
+cd upstream
+git fetch --depth 1 origin <Commit>
+git checkout <Commit>
+
+# Verify license matches the pin (refuse to proceed on mismatch)
+head -3 LICENSE || (echo "FATAL: pin claims MIT/Apache but no LICENSE file" && exit 2)
+
+# Run upstream's own tests on a clean checkout BEFORE patching
+<Test command from pin>     # must exit 0
+```
+
+If the upstream test suite fails on a clean checkout (no patches yet),
+the pin is broken — stop and submit a Stage 6 error with the failing
+test output. Do **not** patch on top of a broken baseline.
+
+### Step 0.2 — Apply the patches the pin lists
+
+For each row of the `Adaptation surface` table:
+
+1. Open the named file.
+2. Make the change described, staying within the LOC estimate ±50%.
+3. **Do not modify files not listed in the table.** If you find you
+   need to touch one, stop and surface that to the user via
+   `submit_result(status: error)` — the pin should be amended in
+   Stage 5, not in Stage 6.
+
+Commit the patches as a single commit with message
+`Stage 6 adaptation: <one-liner>` so reviewers can `git diff
+<pinned_commit> HEAD` to see exactly what we changed.
+
+### Step 0.3 — Re-run the upstream tests after patching
+
+```bash
+<Test command from pin>     # must still exit 0 after our patches
+```
+
+If any upstream test now fails, your patch broke something. Roll back
+and re-scope until the suite passes. **The upstream extractor /
+scorer / dataset loader is sacred — do not patch them; if you think
+you need to, Stage 5 picked the wrong upstream.**
+
+### Step 0.4 — If the pin says NO USABLE UPSTREAM FOUND
+
+You write from scratch, but the bar is higher:
+
+- Your `experiment.py` MUST include the three-stage locked answer
+  extractor (regex → SymPy → LLM-judge fallback) described in the
+  Stage 5 §4.3 paragraph.
+- You MUST ship a `tests/test_extractor.py` with at least 100 hand-
+  graded examples covering numeric / fractional / negative /
+  scientific-notation answer formats. The Stage 6 critic checks for
+  this fixture; missing fixture = D-CODEBASE FAIL.
+- Document in your implementation receipt (Phase 5) that you took
+  the from-scratch exception path and why no upstream worked.
+
+---
+
 ## Phase 1 — Read the contract
 
 ```
