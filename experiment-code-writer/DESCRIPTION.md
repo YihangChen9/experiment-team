@@ -124,9 +124,38 @@ You write from scratch, but the bar is higher:
 - Document in your implementation receipt (Phase 5) that you took
   the from-scratch exception path and why no upstream worked.
 
+### Step 0.5 — Commit your patches, then skip ahead
+
+**The pin path replaces Phases 1–3 (which assume from-scratch
+staging in `/tmp/stage6_impl/`).** When Phase 0 finishes, you have
+already written your code in place inside `upstream/`. Do NOT read
+Phases 1, 2, 3 — they do not apply to you.
+
+Before leaving Phase 0:
+
+```bash
+cd <project_workspace>/upstream
+git add -A
+git commit -m "Stage 6 adaptation: <one-liner naming the patches>"
+git log --oneline <pinned_commit>..HEAD     # capture this for the receipt
+```
+
+If `git status --short` returns anything after the commit, your
+patches are not all staged — fix it before continuing. A clean
+working tree with one new commit on top of `<pinned_commit>` is the
+exit condition for Phase 0.
+
+**Your next phase is Phase 4 (push to remote).** Then Phase 5
+(receipt) and Phase 6 (submit). The engine hard-gates 6a→6b on the
+receipt + a clean upstream/ — uncommitted patches or a missing
+receipt = automatic retry of this whole phase.
+
 ---
 
-## Phase 1 — Read the contract
+> **Phases 1, 2, 3 below are the FROM-SCRATCH PATH** (Step 0.4 only).
+> If a pin existed and Phase 0 finished, jump directly to Phase 4.
+
+## Phase 1 — Read the contract (from-scratch path only)
 
 ```
 read("stage4_methodology_designer.md")
@@ -151,7 +180,7 @@ Build an implementation contract from these three artifacts:
 If the spec is ambiguous on a particular detail, document the
 ambiguity in your receipt — **do not improvise**.
 
-## Phase 2 — Identify implementation tasks from the assignments table
+## Phase 2 — Identify implementation tasks (from-scratch path only)
 
 `stage5_assignments.md` has rows that look like:
 ```
@@ -169,7 +198,7 @@ runner rows say "Execute existing benchmark"), there is nothing for
 you to do — write a minimal receipt explaining that no
 implementation was needed and submit.
 
-## Phase 3 — Write the code
+## Phase 3 — Write the code (from-scratch path only)
 
 For each implementation task:
 
