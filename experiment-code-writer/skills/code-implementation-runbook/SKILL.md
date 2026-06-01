@@ -333,6 +333,46 @@ Stage 6b runner has no code to execute, and the Stage 6a critic
 will REJECT for failed push verification (D4). Every file you
 modified (or created) MUST end up on the remote.
 
+### Step 4.0 — Local static gate BEFORE any push (MANDATORY)
+
+Pushing code that does not even parse wastes a full remote
+smoke-run cycle (minutes + GPU) to discover a one-line
+`SyntaxError` or a missing import. Catch that class of bug
+locally, in ~1s, before it leaves this machine. This mirrors how a
+good coding agent surfaces compiler/LSP errors the instant a file
+is written, instead of after execution.
+
+Run the bundled gate over **every** `.py` file you wrote or
+patched:
+
+```bash
+# Pin path — check the whole patched tree
+python3 "$SKILL_DIR/scripts/static_gate.py" <project_workspace>/upstream/
+
+# From-scratch path — check the staged files
+python3 "$SKILL_DIR/scripts/static_gate.py" /tmp/stage6_impl/<project_id>/
+```
+
+The gate runs, per file: `ast` syntax parse → `py_compile` →
+(if available) `ruff`/`pyflakes` for undefined names and unused
+imports. `$SKILL_DIR` is your skill directory; if it is not set,
+use the absolute path to this runbook's `scripts/static_gate.py`.
+
+Interpret the result:
+
+| Gate output | Meaning | What to do |
+|---|---|---|
+| `static_gate: OK` (exit 0) | All files parse and lint clean | Proceed to Step 4.1 |
+| `STATIC ERRORS detected` with `[error]` lines (exit 1) | Real defects (SyntaxError, undefined name, bad import) | **Fix every `[error]` with `Edit`, then re-run the gate.** Do NOT push. |
+| `warnings only` (exit 0) | Style/lint nits, no blockers | May proceed; fix if cheap |
+| `linter: none` note | Neither `ruff` nor `pyflakes` installed | Syntax/compile still ran; optionally `pip install ruff` for undefined-name coverage, then re-run |
+
+**Do not push, do not write the receipt, do not `submit_result`
+until the gate exits 0 (or warnings-only).** A push of code that
+fails the static gate is the same avoidable failure as a missing
+push — the Stage 6b smoke run will simply fail on import, and the
+6a→6b cycle restarts. Loop fix→re-gate until clean.
+
 ### Pin path vs from-scratch path — what gets pushed
 
 - **Pin path (Phase 0.2 ran)** — push the entire `upstream/`
@@ -536,6 +576,12 @@ corresponding receipt on disk is auto-REJECT by Stage 6a critic.**
   "pass@k with sympy normalisation", implement exactly that; don't
   substitute "majority vote with regex matching" because it's
   easier.
+- **Don't skip the local static gate (Step 4.0).** Pushing code
+  that fails `ast`/`py_compile` means the remote smoke run dies on
+  import after spending minutes + GPU to discover a one-line typo.
+  Run `static_gate.py`, fix every `[error]`, re-run until clean —
+  then push. The gate is local and costs ~1s; skipping it is never
+  worth the wasted remote cycle.
 - **Don't skip the push verification.** A pushed-but-not-verified
   file is the same as a not-pushed file for the runner.
 - **Don't echo `INFRA_SESSION_KEY`.** The experiment-infra runbook
