@@ -71,6 +71,40 @@ Do **not** invent a third interpretation ("environmental, I'll patch
 to /tmp instead"). Patches always go into the cloned `upstream/`
 directory; only the classification of pre-patch tests changes.
 
+### Step 0.1.5 — Patch plan BEFORE you edit a single line (MANDATORY)
+
+Do not start editing files the moment the clone lands. Plan the
+patches first — write before code. The pin already tells you *what*
+to change; this step makes you state *how*, and self-check that the
+how stays inside the contract, before any `Edit` runs. It is a
+~30-line thinking step that prevents the most expensive 6a failure:
+realising mid-edit that the spec is ambiguous or that you need a
+file the pin never listed, after you have already half-patched the
+tree.
+
+This is a **lightweight** plan (the pin's adaptation surface table
+is already precise — do not re-derive it). For each row of that
+table, state in working memory one line:
+
+```
+<file path> : <what changes> ← pin row / Stage 5 §<n>  | risk: <one phrase>
+```
+
+Then run this self-check before proceeding to Step 0.2 — **all five
+must be YES**, or you stop and `submit_result(status: error)`
+instead of improvising:
+
+1. Every file I plan to touch appears in the pin's adaptation surface table.
+2. I am NOT planning to touch the upstream extractor / scorer / dataset loader (sacred — see Step 0.3).
+3. Each planned change maps to a concrete spec line; none is "while I'm here" scope creep.
+4. My planned edits stay within the table's LOC estimate (±50%).
+5. The plan adds no new IV/DV/parameter/metric beyond the Stage 4/5 contract.
+
+If any answer is NO, the pin is wrong or insufficient — that is a
+Stage 5 amendment, not something you fix by editing more files.
+Stop and report. Record this plan + checklist outcome in the
+receipt (Phase 5 §0.5).
+
 ### Step 0.2 — Apply the patches the pin lists, **IN PLACE inside upstream/**
 
 For each row of the `Adaptation surface` table, modify the file named
@@ -201,6 +235,53 @@ If the assignments table has zero implementation tasks (e.g. all
 runner rows say "Execute existing benchmark"), there is nothing for
 you to do — write a minimal receipt explaining that no
 implementation was needed and submit.
+
+## Phase 2.5 — Implementation plan BEFORE you write code (MANDATORY)
+
+The from-scratch path has no pin to keep you honest, so this is
+where you write the plan *before* the code. This is the single
+highest-leverage step on this path: an LLM writing a benchmark
+driver from a prose spec drifts — it forgets an IV, invents a
+metric, or hardcodes a synthetic dataset — and the Stage 6a critic
+only catches it after you have written and pushed everything, then
+the whole 6a→6b cycle restarts. A few minutes planning here saves
+that.
+
+This is an **implementation** plan (how you will *translate* the
+contract into files), NOT a design plan. You do not decide what to
+test, which datasets, or which metrics — Phase 1's contract table
+already fixed all of that. You only decide how to lay it out in
+code.
+
+For each task from Phase 2, write in working memory:
+
+```
+### TN — <task>
+- Target file(s): experiment.py / benchmarks.py / ...
+- Key functions / classes I will write: <names + one-line purpose>
+- Contract coverage — each row maps to where it lands in code:
+    IV1 <name>  → <file>::<function> (argparse flag / config const)
+    DV1 <name>  → output JSONL field
+    benchmark   → datasets.load_dataset("...") in <file>
+    k / seeds / temperature → <where>
+- The single internal generate() (DRY) lives in: <file>::generate
+- --smoke shrink point: N_PROBLEMS = 5 if args.smoke else FULL_N, used in <loop>
+- Risks / ambiguities: <list, or "none">
+```
+
+Then run this self-check — **all must be YES** before any `Write`:
+
+1. Every IV, DV, parameter, benchmark, k value, and seed setting in the Phase 1 contract table appears in a "contract coverage" line above. (Anything in the contract not mapped = a gap you must resolve now, not after writing.)
+2. I am adding NOTHING outside the contract — no extra IV/DV, no extra metric, no "nice to have" sweep.
+3. There is exactly ONE internal `generate()`; every inference path calls it (so `--smoke` validates the same code the full run uses).
+4. Real benchmarks use `datasets.load_dataset(...)`; I am not embedding synthetic/mock data unless Stage 5 explicitly said synthetic.
+5. `--smoke` is a config-level shrink of the SAME code path, not a separate fast path or `skip_pilots` shortcut.
+
+If a contract item cannot be mapped (the spec is ambiguous on it),
+**do not improvise** — document the ambiguity in the receipt
+(Phase 5 §0.5) and, if it blocks implementation, surface it via
+`submit_result(status: error)`. Record the plan + checklist outcome
+in the receipt.
 
 ## Phase 3 — Write the code (from-scratch path only)
 
@@ -476,6 +557,13 @@ Required sections:
 - If SKIPPED_ENV, paste the first 5 lines of the failing
   install/import error so the runner knows what's expected to
   fail on Linux too (vs what was macOS-only).
+
+## 0.5 Implementation plan (REQUIRED — written before code)
+- `plan_self_check`: PASS | FAIL — the pre-code checklist from
+  Step 0.1.5 (pin path) or Phase 2.5 (from-scratch path).
+- Paste the per-file/per-task plan you wrote before editing.
+- Ambiguities found during planning (or "none"). If any blocked
+  implementation, note the `submit_result(status: error)` you raised.
 
 ## 1. Tasks completed
 For each implementation task from Stage 5 assignments:
