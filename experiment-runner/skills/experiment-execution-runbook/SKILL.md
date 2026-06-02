@@ -41,6 +41,49 @@ entrypoint" tells you the exact command Stage 6a wants run.
 If `stage6_implementation_receipt.md` is missing, jump straight to step 3
 and write a report with `status: blocked`, then step 4.
 
+## Step 0.5 — Pick a FREE GPU for run_local (MANDATORY for GPU jobs)
+
+The `run_local` infra shares one multi-GPU node, and its default
+placement can pin your job to a **busy** GPU even when others are
+idle — a real failure (run 1c9befd9a898): the job landed on GPU 1
+(7.7 GB free) and OOM'd at `model.generate()` while GPUs 4–7 sat
+**completely idle** (79 GB free each). A 7B model needs ~14 GB; that
+OOM is pure mis-placement, not a real resource shortage.
+
+So **you** pick the GPU. Query the node, choose a GPU with enough
+free memory, and pin the run to it with `CUDA_VISIBLE_DEVICES` in the
+run_command:
+
+```bash
+# Query per-GPU free memory and pick the emptiest one.
+SRV=$(bash "$SKILL_DIR/scripts/fast_query_server_info.sh" 2>/dev/null)
+GPU=$(echo "$SRV" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+# Walk to setup.machine.gpu[]; pick the gpu_index with the most free GB.
+gpus = (((d.get("setup") or {}).get("machine") or {}).get("gpu")) or []
+best = max(gpus, key=lambda g: g.get("memory_free_gb", 0), default=None)
+# Need ~14 GB for a 7B model in bf16 (scale up for bigger models).
+if best and best.get("memory_free_gb", 0) >= 16:
+    print(best["gpu_index"])
+else:
+    print("")   # no GPU has enough free memory
+')
+echo "PICKED_GPU=$GPU"
+```
+
+- A number (`PICKED_GPU=4`) → prepend `CUDA_VISIBLE_DEVICES=$GPU ` to
+  **every** run_command you submit below (smoke AND full). With
+  `CUDA_VISIBLE_DEVICES` set, the code's `device_map="auto"` /
+  `cuda:0` maps to that physical GPU.
+- Empty (`PICKED_GPU=`) → **no GPU has ≥16 GB free.** Do NOT submit
+  blindly (it will OOM). Skip to Step 3, write the report with
+  `status: blocked_no_gpu`, paste the `fast_query_server_info` output
+  as evidence, and stop. This is an infra-capacity block, not a code
+  bug — the engine surfaces it to the CEO rather than burning retries.
+
+For non-GPU experiments (pure CPU), skip this step.
+
 ## Step 1 — Submit (one `fast_submit.sh` per runner row)
 
 For each row whose Skill column contains `experiment_runner`, run ONE
@@ -58,10 +101,12 @@ hours of GPU to a full run that may hang on an architectural bug
 (wrong worker pool config, broken loader, hung dependency).
 
 ```bash
-# Step 1a — submit the smoke run first
+# Step 1a — submit the smoke run first.
+# Prepend CUDA_VISIBLE_DEVICES=$GPU (from Step 0.5) so the run lands on
+# the free GPU you picked, not whatever the scheduler defaults to.
 SMOKE_RID=$(bash "$SKILL_DIR/scripts/fast_submit.sh" \
   --config "$SKILL_DIR/assets/base.conf.json" \
-  -c "cd omc/<project_id>/<iter_id>/ && python experiment.py --smoke <other args>" \
+  -c "cd omc/<project_id>/<iter_id>/ && CUDA_VISIBLE_DEVICES=$GPU python experiment.py --smoke <other args>" \
   2>&1 | tee /tmp/submit_smoke.log | grep -oE 'run_[a-f0-9]+' | head -1)
 echo "SMOKE_RID=$SMOKE_RID"
 ```
@@ -171,10 +216,11 @@ quality gate would have caught this in 5 minutes instead of burning
 hours on a doomed full run.
 
 ```bash
-# Step 1c — submit the full run, only if SMOKE_OK AND QUALITY_OK
+# Step 1c — submit the full run, only if SMOKE_OK AND QUALITY_OK.
+# Same CUDA_VISIBLE_DEVICES=$GPU pin as the smoke run.
 RUN_ID_T1=$(bash "$SKILL_DIR/scripts/fast_submit.sh" \
   --config "$SKILL_DIR/assets/base.conf.json" \
-  -c "cd omc/<project_id>/<iter_id>/ && python experiment.py <other args>" \
+  -c "cd omc/<project_id>/<iter_id>/ && CUDA_VISIBLE_DEVICES=$GPU python experiment.py <other args>" \
   2>&1 | tee /tmp/submit_t1.log | grep -oE 'run_[a-f0-9]+' | head -1)
 echo "RUN_ID_T1=$RUN_ID_T1"
 ```
