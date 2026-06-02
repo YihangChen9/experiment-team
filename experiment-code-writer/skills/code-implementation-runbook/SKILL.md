@@ -276,6 +276,13 @@ Then run this self-check — **all must be YES** before any `Write`:
 3. There is exactly ONE internal `generate()`; every inference path calls it (so `--smoke` validates the same code the full run uses).
 4. Real benchmarks use `datasets.load_dataset(...)`; I am not embedding synthetic/mock data unless Stage 5 explicitly said synthetic.
 5. `--smoke` is a config-level shrink of the SAME code path, not a separate fast path or `skip_pilots` shortcut.
+6. **The pure-logic functions are import-safe and CPU-only.** Answer extraction, scoring, prompt formatting, and the output-schema builder are plain functions that take inputs and return outputs — no GPU, no `datasets.load_dataset`, no `model.generate`, no network at *module import time* or inside these functions. All GPU/dataset/model work lives behind `if __name__ == "__main__":` or inside a `run()` the CLI calls. **Reason:** Phase 3.5 will `import` your module and unit-test these functions locally (no GPU on this machine). If importing the module loads a 7B model or hits HuggingFace, the local test loop cannot run and the bug-prone logic ships untested.
+
+In your Phase 2.5 plan, add one line per task naming the pure-logic functions you will test locally:
+
+```
+- Locally testable (pure, CPU): extract_answer(text)->int|None, score(pred,gold)->bool, build_prompt(q)->str
+```
 
 If a contract item cannot be mapped (the spec is ambiguous on it),
 **do not improvise** — document the ambiguity in the receipt
@@ -406,6 +413,90 @@ For each implementation task:
    Inside the script, set `n_problems = 5 if args.smoke else FULL_N`,
    and use that constant in the existing loop. One-line change to the
    loop; no duplicate code path.
+
+## Phase 3.5 — Local test loop (from-scratch path only, MANDATORY)
+
+The from-scratch path has no upstream `pytest` to keep it honest, so
+the first time this code *executes* is the remote Stage 6b smoke run —
+minutes + GPU away. A wrong regex in `extract_answer`, an off-by-one
+in `score`, a `build_prompt` that drops the question: none of these
+are caught by the static gate (they parse and lint clean), and each
+one silently produces 0% accuracy that looks like a "model is bad"
+result, not a "your extractor is broken" bug. This loop catches that
+class locally, in ~1 s, before any push.
+
+You CANNOT run the full experiment locally (no GPU, no datasets on
+this machine). You CAN — and must — unit-test the **pure-logic
+functions** you flagged in the Phase 2.5 plan (answer extraction,
+scoring, prompt building, output-schema). That is where the
+silent-accuracy-killing bugs live.
+
+### Step 3.5.1 — Write `test_<driver>.py`
+
+Next to your driver (e.g. `/tmp/stage6_impl/<project_id>/test_experiment.py`),
+write a small pytest file with **hand-graded** assertions — you, the
+author, decide the expected output for each input, so the test
+encodes intent, not whatever the code happens to do:
+
+```python
+from experiment import extract_answer, score, build_prompt
+
+def test_extract_answer_plain():
+    assert extract_answer("The answer is 42.") == 42
+def test_extract_answer_last_int_fallback():
+    assert extract_answer("first 7 then 13") == 13
+def test_extract_answer_none_when_absent():
+    assert extract_answer("no number here") is None
+def test_score_exact():
+    assert score(42, 42) is True
+    assert score(41, 42) is False
+def test_build_prompt_contains_question():
+    assert "What is 2+2?" in build_prompt("What is 2+2?")
+```
+
+Cover, at minimum: each pure function's happy path, one edge case
+(empty / no-match / boundary), and the failure mode you most worry
+about (usually answer extraction — the #1 cause of "smoke passed,
+accuracy 0").
+
+### Step 3.5.2 — Run the loop: plan → code → test → score → refine
+
+```bash
+cd /tmp/stage6_impl/<project_id>
+python3 "$SKILL_DIR/scripts/static_gate.py" .        # syntax + lint
+python3 -m pytest -q test_experiment.py              # pure-logic tests
+```
+
+**Score this iteration** — both must hold:
+- `static_gate: OK` (or warnings-only), AND
+- pytest: all collected tests pass.
+
+| Result | Action |
+|---|---|
+| Both green | Done — proceed to Phase 4. |
+| pytest fails | Read the assertion. Decide: is the CODE wrong (fix `experiment.py`) or is the TEST wrong (you mis-stated the expected value)? Fix the right one with `Edit`, re-run. |
+| import error in the test | Your pure logic is NOT import-safe (it ran GPU/dataset code at import). Move that work behind `__main__` / into `run()`. This is the Phase 2.5 self-check #6 failing late — fix it now. |
+| static gate `[error]` | Fix the syntax/undefined-name, re-run. |
+
+**Hard cap: 3 iterations.** This is a loop, not an infinite refine.
+After 3 rounds:
+- If green → proceed.
+- If still red → STOP iterating. Record in the receipt (§0.6) exactly
+  which tests fail and why you could not resolve them in budget, then
+  proceed to Phase 4 anyway (a documented known-failing test is far
+  better than silently shipping untested logic — the Stage 6a critic
+  and the 6b smoke run are the backstops). Do NOT delete or weaken the
+  failing test to force green; that defeats the entire purpose.
+
+### Why a cap, and why proceed-on-fail
+
+The loop exists to catch cheap bugs cheaply, not to chase a perfect
+score. Three honest iterations catch the vast majority of extractor /
+scorer bugs. Beyond that, you are likely blocked on something the
+local environment can't resolve (a dataset-shape assumption, a
+tokenizer quirk) that the remote smoke run will surface anyway — so
+spend the budget there, with the failure documented, rather than
+looping locally forever.
 
 ## Phase 4 — Push to the remote working dir (MANDATORY)
 
@@ -565,6 +656,17 @@ Required sections:
 - Ambiguities found during planning (or "none"). If any blocked
   implementation, note the `submit_result(status: error)` you raised.
 
+## 0.6 Local test loop (REQUIRED on from-scratch path; "N/A — pin path" otherwise)
+- `local_test_status`: PASS | FAIL_DOCUMENTED | SKIPPED_PIN
+- `iterations_used`: <0-3> of the Phase 3.5 budget.
+- Test file: `/tmp/stage6_impl/<project_id>/test_<driver>.py` (<N> tests).
+- Paste the final `pytest -q` summary line (e.g. `5 passed in 0.3s`,
+  or `4 passed, 1 failed`).
+- If `FAIL_DOCUMENTED`: name each still-failing test and the one-line
+  reason it could not be resolved in 3 iterations (e.g. "depends on
+  tokenizer output only available on the GPU host"). Do NOT report
+  PASS for a loop you did not actually run.
+
 ## 1. Tasks completed
 For each implementation task from Stage 5 assignments:
   ### TN — <task description verbatim>
@@ -670,6 +772,14 @@ corresponding receipt on disk is auto-REJECT by Stage 6a critic.**
   Run `static_gate.py`, fix every `[error]`, re-run until clean —
   then push. The gate is local and costs ~1s; skipping it is never
   worth the wasted remote cycle.
+- **Don't skip the Phase 3.5 local test loop (from-scratch).** The
+  static gate proves the code *parses*; it does NOT prove your
+  `extract_answer` regex is right. An untested extractor that returns
+  `None` on every real output looks identical to "the model scored 0%"
+  — and you only find out hours into the full run. Write the hand-graded
+  pytest, run it locally, iterate ≤3×. If it can't go green in budget,
+  document the failing test in receipt §0.6 — never weaken the test to
+  force green.
 - **Don't skip the push verification.** A pushed-but-not-verified
   file is the same as a not-pushed file for the runner.
 - **Don't echo `INFRA_SESSION_KEY`.** The experiment-infra runbook
