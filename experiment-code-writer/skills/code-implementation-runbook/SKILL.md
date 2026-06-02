@@ -391,6 +391,52 @@ For each implementation task:
      rule above). The Stage 6a critic flags `device_map="auto"` as a
      spec deviation.
 
+   - **The whole GPU-inference block must be memory-safe AND load-once.**
+     `device_map` is only one of a family of mistakes that each cause an
+     OOM or a load failure mid-run. Use this canonical pattern and run the
+     checklist below — these are not optional "nice to haves", each line
+     prevents a specific crash we have hit or will hit:
+
+         # ── load ONCE, at module __main__ / run() start — NEVER inside the loop ──
+         tok = AutoTokenizer.from_pretrained(
+             MODEL_PATH, local_files_only=True, trust_remote_code=True)
+         model = AutoModelForCausalLM.from_pretrained(
+             MODEL_PATH,
+             torch_dtype=torch.bfloat16,   # NEVER omit → default fp32 = 2× VRAM = OOM
+             device_map="cuda:0",          # single device, NOT "auto"
+             local_files_only=True,        # offline node: NO HuggingFace hub download
+             trust_remote_code=True,
+         )
+         model.eval()
+         ...
+         for problem in problems:          # model already loaded; loop only does inference
+             ids = tok.apply_chat_template(msgs, add_generation_prompt=True,
+                                           return_tensors="pt").to(model.device)
+             with torch.inference_mode():  # NEVER omit → grad buffers accumulate → OOM
+                 out = model.generate(ids, max_new_tokens=N, do_sample=False,
+                                      eos_token_id=tok.eos_token_id,
+                                      pad_token_id=tok.pad_token_id or tok.eos_token_id)
+
+     **Pre-push checklist — every line YES, or you OOM/crash on the remote:**
+     1. Model + tokenizer loaded **exactly once**, outside the per-problem
+        loop (grep your code: `from_pretrained` must NOT be inside any `for`).
+     2. `torch_dtype` is set to the Stage 5 dtype (bf16) — never left to
+        default (fp32 doubles VRAM).
+     3. `device_map="cuda:0"` (or the spec's value) — never `"auto"`.
+     4. `MODEL_PATH` is the exact **local** path from Stage 5
+        (`/mnt/data0/hf_models/...`), not a hub id like `"Qwen/..."` —
+        `local_files_only=True` so a wrong path fails loud instead of
+        silently downloading.
+     5. Every `model.generate()` is inside `with torch.inference_mode():`.
+     6. Inputs are moved to `model.device` (not a hardcoded `"cuda"`).
+     7. Generation is **per-example or small-batch**, never one giant batch
+        of all problems (KV-cache for N×long sequences OOMs).
+     8. `eos_token_id` + `pad_token_id` are passed (clean stop).
+
+     Record "GPU inference checklist: PASS" in the receipt (§0.6 area). The
+     Stage 6a critic spot-checks these; a `from_pretrained` inside a loop,
+     a missing `torch_dtype`, or `device_map="auto"` is a D-CODE deviation.
+
 4. **Output format** —
    - Use `JSONL` output (one record per problem/seed/condition cell)
      UNLESS Stage 5 mandates something else.
