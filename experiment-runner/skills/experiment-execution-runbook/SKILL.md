@@ -188,9 +188,13 @@ burns iteration budget.
 
 This is one bash invocation. Do not split it into many small polls —
 that's the failure pattern. Use a `while` loop with `sleep 30` inside
-ONE bash call. The LangChain bash tool caps at 600s, so do batches of
-9 minutes; if the experiment is still running after that, you simply
-re-issue the same loop for another batch.
+ONE bash call. The LangChain bash tool caps at 600s, so use a 9-min
+batch. If the experiment is still running after that, **exit
+immediately and report `status: still_running` for the affected
+run_id(s) in Step 3** — the engine will then park the project in
+`producer_b_waiting`, let the `run_tracker` cron poll infra every
+30 s, and re-dispatch you to write the FINAL report when every
+pending run reaches terminal.
 
 ```bash
 RID="$RUN_ID_T1"
@@ -214,11 +218,31 @@ done
 
 After the bash returns, look at the last echo line:
 - `TERMINAL status=succeeded|failed|rejected` → go to step 3.
-- `BATCH_EXPIRED status=still_running` → you have a budget choice:
-  - If you have agent iterations to spare, re-run the same bash once
-    more (another 9-min batch). Up to **2 re-runs** total — so worst
-    case 27 min of wall-clock polling. **Do NOT re-run more than 2
-    times.** After 2 re-runs, go to step 3 with `status: still_running`.
+- `BATCH_EXPIRED status=still_running` → **exit the polling loop now**.
+  Do **NOT** issue another 9-min poll batch. Go straight to step 3,
+  write the report with `status: still_running` and the captured
+  `run_id`, and submit_result. The engine's `run_tracker` cron will
+  pick up the run_id from your report, poll infra every 30 s, and
+  re-dispatch you for the FINAL report once every pending run reaches
+  terminal — see "Long-running runs (engine-side waiter)" below.
+
+### Long-running runs (engine-side waiter)
+
+When you report `status: still_running` for a run_id, the engine
+transitions the project to `producer_b_waiting`. `core/run_tracker.py`
+polls infra `/api/list_runs` every 30 s and updates each project's
+`stage_6_runs` map in `pipeline_state.yaml`. When every entry in
+`pending_run_ids` reaches a terminal status (`succeeded`, `failed`,
+`rejected`, `blocked`, `cancelled`), the engine calls
+`on_runs_all_terminal()` which re-dispatches you with a "FINAL
+REPORT — runs are now terminal" task that includes a digest of each
+run's final status. At that point you skip Step 1 (no resubmit) and
+jump to Step 3 to write the FINAL `stage6_experimentalist.md`.
+
+This makes hours-long experiments structurally collectible without
+the runner holding an agent slot open for the entire duration — and
+without the historical "9-min poll cap × 3 retries → INCONCLUSIVE
+paper" failure mode (#93).
 
 Capture final evidence (only when status is terminal) with **one** more
 bash call to get full `log_tail` / metrics:
