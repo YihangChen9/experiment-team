@@ -367,6 +367,30 @@ For each implementation task:
      prompt, no chat template) — that's the no-stop-token failure mode
      observed in a prior run.
 
+   - **Model loading: load onto ONE explicit device — `device_map="cuda:0"`,
+     NEVER `device_map="auto"`** (for a single model that fits on one GPU,
+     which is every ≤~30B model on an 80 GB card). Use exactly what Stage 5 /
+     the reference template specifies:
+
+         model = AutoModelForCausalLM.from_pretrained(
+             MODEL_PATH,
+             torch_dtype=torch.bfloat16,
+             device_map="cuda:0",          # single device — NOT "auto"
+             local_files_only=True, trust_remote_code=True,
+         )
+
+     Why this matters (real failure, run 1c9befd9a898): the code used
+     `device_map="auto"`. On a contended GPU, `accelerate` silently shards
+     the model across GPU + CPU ("Some parameters are on the meta device
+     because they were offloaded to the cpu"), then OOMs at the first
+     `model.generate()` — a confusing mid-run crash. With an explicit
+     `device_map="cuda:0"`, a too-full GPU fails LOUDLY at load time
+     (clear error, no CPU offload, no silent activation OOM). Do not
+     "improve" the spec's `cuda:0` into `"auto"` — Stage 5's loading
+     kwargs are part of the locked contract (see the Stage-5-authoritative
+     rule above). The Stage 6a critic flags `device_map="auto"` as a
+     spec deviation.
+
 4. **Output format** —
    - Use `JSONL` output (one record per problem/seed/condition cell)
      UNLESS Stage 5 mandates something else.
