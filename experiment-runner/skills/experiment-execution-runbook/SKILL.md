@@ -100,13 +100,25 @@ runner uses this as a 5-minute proof-of-pipeline before committing
 hours of GPU to a full run that may hang on an architectural bug
 (wrong worker pool config, broken loader, hung dependency).
 
+**Use the receipt's "Runnable entrypoint" command VERBATIM.** Copy the
+smoke command exactly as Stage 6a wrote it in
+`stage6_implementation_receipt.md` — do NOT invent or add flags
+(`--output-dir`, `--results`, `--save`, …). The code only accepts the
+flags 6a actually defined; an extra flag triggers
+`argparse: unrecognized arguments` and the run fails before it starts.
+If the receipt's entrypoint looks wrong or incomplete, that is a Stage 6a
+bug — report it (Step 3, `status: blocked_smoke_failure`), do not
+work around it by guessing flags.
+
 ```bash
 # Step 1a — submit the smoke run first.
-# Prepend CUDA_VISIBLE_DEVICES=$GPU (from Step 0.5) so the run lands on
-# the free GPU you picked, not whatever the scheduler defaults to.
+# SMOKE_CMD = the receipt's "Runnable entrypoint (smoke)" VERBATIM, with
+# CUDA_VISIBLE_DEVICES=$GPU (from Step 0.5) prepended so it lands on the
+# free GPU you picked. Do NOT add other flags the receipt didn't list.
+SMOKE_CMD="cd omc/<project_id>/<iter_id>/ && CUDA_VISIBLE_DEVICES=$GPU <exact smoke command from receipt>"
 SMOKE_RID=$(bash "$SKILL_DIR/scripts/fast_submit.sh" \
   --config "$SKILL_DIR/assets/base.conf.json" \
-  -c "cd omc/<project_id>/<iter_id>/ && CUDA_VISIBLE_DEVICES=$GPU python experiment.py --smoke <other args>" \
+  -c "$SMOKE_CMD" \
   2>&1 | tee /tmp/submit_smoke.log | grep -oE 'run_[a-f0-9]+' | head -1)
 echo "SMOKE_RID=$SMOKE_RID"
 ```
@@ -142,6 +154,18 @@ done
   attach the smoke run_id + log_tail. The Stage 6a Code Writer needs
   to fix the implementation before any retry burns more GPU. This is
   the safety net for hung-pipeline bugs.
+
+  **DO NOT re-submit the smoke run with different args to "fix" it
+  yourself.** If the failure is a code/interface bug — `unrecognized
+  arguments`, `ImportError` / `ModuleNotFoundError`, `SyntaxError`,
+  `AttributeError`, `error: argument`, a non-zero argparse exit — that is
+  a Stage 6a implementation bug, not something you patch by guessing
+  flags. Submitting variant commands in a loop burns your step budget
+  and ends in an empty (stub) result, which fails the whole stage. Submit
+  **at most ONE** smoke run; on an impl-bug failure go straight to Step 3,
+  set `status: blocked_smoke_failure`, and in the report state plainly
+  "impl bug: <the error>" so the engine routes the retry back to Stage 6a
+  to rebuild. Writing the honest report is ALWAYS cheaper than thrashing.
 
 ## Step 1b' — Smoke quality check (don't trust "succeeded")
 
