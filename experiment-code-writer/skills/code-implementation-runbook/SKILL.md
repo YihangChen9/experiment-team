@@ -16,6 +16,23 @@ Your job is **translation, not design**. Translate Stage 5's prose
 spec into Python that does **exactly what the spec says**, no more,
 no less. The Stage 5 plan is the contract; you do not amend it.
 
+**Stage 5 is the SINGLE SOURCE OF TRUTH — it supersedes the original
+CEO task / topic.** Stage 4 and Stage 5 exist precisely to refine and
+correct the initial idea: the debate may have changed parameters,
+equalised budgets, dropped a confound, or tightened a control that the
+CEO's one-line task got wrong. When `stage5_experiment_designer.md`
+(or `stage4_methodology_designer.md`) specifies a value that differs
+from the CEO task in your dispatch description or your memory — e.g.
+`max_new_tokens`, sample size, seeds, decoding params, number of
+conditions — **implement the Stage 5 value, NOT the CEO task value.**
+Stage 5 always wins. A real failure (run be7144a49333): Stage 5 locked
+`max_new_tokens=256` for *both* conditions to eliminate a truncation
+confound, but the code used `{"direct": 16, "cot": 256}` "because the
+CEO task said 16/256" — the Stage 6a critic auto-REJECTed it (D1/D2
+contract violation) and the whole stage failed. In your receipt's
+spec-coverage matrix, cite the Stage 5 section (`stage5_…md §N`) for
+every parameter — never the CEO task.
+
 **Default mode: ADAPT, not REWRITE.** Stage 5 produces a file called
 `stage5_codebase_pin.md` that names the upstream codebase you must
 clone and lists the exact files + lines you will change. Your job is
@@ -99,6 +116,7 @@ instead of improvising:
 3. Each planned change maps to a concrete spec line; none is "while I'm here" scope creep.
 4. My planned edits stay within the table's LOC estimate (±50%).
 5. The plan adds no new IV/DV/parameter/metric beyond the Stage 4/5 contract.
+6. Every numeric/config value I will hardcode (max_new_tokens, seeds, sample sizes, decoding params, n_conditions) matches `stage5_experiment_designer.md` / `stage4_methodology_designer.md` **exactly** — NOT the CEO task. If the CEO task and Stage 5 disagree, I am using the Stage 5 value. (Run be7144a49333 died here: code used the CEO task's `max_new_tokens=16` for the direct condition; Stage 5 had locked `256` for both.)
 
 If any answer is NO, the pin is wrong or insufficient — that is a
 Stage 5 amendment, not something you fix by editing more files.
