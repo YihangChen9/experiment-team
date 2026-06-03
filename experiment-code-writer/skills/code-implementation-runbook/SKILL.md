@@ -43,6 +43,31 @@ USABLE UPSTREAM FOUND), and it triggers extra critic scrutiny.
 
 ## Phase 0 — Honour the Stage 5 upstream pin
 
+### Step 0.0 — RETRY? Inventory existing state FIRST (MANDATORY)
+
+If your task description contains retry feedback (a stub warning, a
+critic rejection, "previous attempt..."), a previous attempt may have
+already done most of the work. **Do NOT restart the analysis from
+zero** — a real run (083041abd013) burned all 4 attempts re-discovering
+the same facts and died of step exhaustion each time, with the actual
+code sitting finished in `upstream/` and only the receipt missing.
+
+Inventory what already exists, in this order, and SKIP every step whose
+output is already on disk:
+
+```bash
+ls <project_workspace>/upstream 2>/dev/null && cd <project_workspace>/upstream && git log --oneline -3   # adaptation commit already there?
+ls /tmp/stage6_impl/<project_id>/ 2>/dev/null                          # from-scratch staging already there?
+read("stage6_implementation_receipt.md")                               # receipt already drafted?
+bash "$SKILL_DIR/scripts/fast_query_working_dir.sh" --max-depth 4 | grep <project_id>   # already pushed?
+```
+
+Then complete ONLY the missing tail of the pipeline (typically: push →
+receipt → submit). If the code is written and pushed and only the
+receipt is missing, write the receipt and submit — that is a 2-minute
+finish, not a fresh task. Record in the receipt that this attempt
+resumed from prior state.
+
 Read `stage5_codebase_pin.md` from the project workspace first.
 
 ```python
@@ -165,6 +190,29 @@ Classify the post-patch result with the same table as Step 0.1:
   extractor / scorer / dataset loader is sacred — do not patch
   them; if you think you need to, Stage 5 picked the wrong
   upstream.**
+
+### Step 0.3.5 — If the pin itself is BROKEN (hallucinated commit / files)
+
+Distinct from failing tests: sometimes the pin names a commit that
+does not exist (`git fetch origin <sha>` → "couldn't find remote ref")
+or an adaptation-surface file that is absent from the tree (real case:
+pin named `simple_evals/gsm8k_eval.py`; the repo only has
+`mgsm_eval.py`). Stage 5 hallucinated — handle it pragmatically, in
+this order:
+
+1. **Commit unreachable but repo + adaptation surface valid** → resolve
+   to `origin/HEAD`, document the deviation in the receipt
+   (`pin_deviation: commit <sha> unreachable, resolved to <head_sha>`),
+   and continue the pin path.
+2. **Named files absent / adaptation surface impossible** → the pin is
+   unusable. Take the from-scratch path (Step 0.4) and record
+   `path_taken: from-scratch (pin broken: <one-line reason>)` in the
+   receipt §0 — the Stage 6 critic and the engine surface this to
+   Stage 5 so the pin author learns.
+
+Either way: decide ONCE, write the decision into the receipt
+immediately, and move on. Do not re-litigate the pin on a retry —
+Step 0.0's inventory will show the decision already made.
 
 ### Step 0.4 — If the pin says NO USABLE UPSTREAM FOUND
 
