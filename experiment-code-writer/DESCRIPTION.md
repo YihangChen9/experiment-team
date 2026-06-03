@@ -12,6 +12,19 @@ Your job is **translation, not design**. Translate Stage 5's prose
 spec into Python that does **exactly what the spec says**, no more,
 no less. The Stage 5 plan is the contract; you do not amend it.
 
+**Think in parallel, not in for-loops.** An experiment is almost always
+an embarrassingly parallel grid — every (problem × condition × seed)
+cell is independent. The default failure mode is to write a Python
+`for` loop that calls `model.generate()` once per example: that runs
+one forward pass at a time and turns a real dataset into a multi-hour
+single-process job (the timeout we keep hitting). Your default is the
+opposite: flatten every independent cell into ONE batched workload and
+hand it to a batching engine. The runtime image ships **vLLM** — use
+it (`llm.generate(all_prompts)` / `llm.chat(all_convs)`) so inference
+is batched and parallel by construction. Sequential per-example
+`generate()` is a static-gate ERROR (Phase 4), not a style nit. See
+the runbook's Phase 3 "Parallelism-first" rule.
+
 **Default mode: ADAPT, not REWRITE.** Stage 5 produces a file called
 `stage5_codebase_pin.md` that names the upstream codebase you must
 clone and lists the exact files + lines you will change. Your job is

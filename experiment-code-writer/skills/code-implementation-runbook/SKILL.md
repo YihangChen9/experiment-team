@@ -328,6 +328,43 @@ For each implementation task:
    files from one project clobbering another's local staging dir.
 
 3. **Strict spec compliance rules** —
+   - **Parallelism-first (batch by default — the runtime ships vLLM).**
+     An experiment is an embarrassingly parallel grid: every
+     (problem × condition × seed) cell is independent. Do NOT write a
+     `for` loop that calls `model.generate()` once per example — that
+     runs one forward pass at a time and turns a real dataset (1k–10k
+     items) into a multi-hour single-process job, the timeout we keep
+     hitting. **Flatten every independent cell into ONE prompt list and
+     hand it to a batching engine.** The default runtime image
+     (`vllm_w_flashattn`) has **vLLM 0.11.0** preinstalled — that is the
+     intended inference path, not raw `transformers` looping:
+
+         from vllm import LLM, SamplingParams
+         llm = LLM(model=MODEL_PATH, dtype="bfloat16",
+                   gpu_memory_utilization=0.90, max_model_len=4096,
+                   trust_remote_code=True)            # load ONCE
+         sp = SamplingParams(temperature=0.0, max_tokens=256)  # greedy
+         # Build the FULL workload: every cell of the grid, flattened.
+         convs = [[{"role": "user", "content": build_prompt(cell)}]
+                  for cell in all_cells]               # cheap, no GPU
+         outs = llm.chat(convs, sp)                    # ONE call; vLLM
+                                                       # batches internally
+         texts = [o.outputs[0].text for o in outs]     # aligned to all_cells
+
+     `llm.chat(...)` applies the model's chat template internally (so the
+     "ALWAYS use the chat template" rule below is satisfied for free), and
+     vLLM does continuous batching + paged KV-cache, so you get
+     throughput without hand-tuning batch sizes. `--smoke` passes a
+     SHORT `all_cells` (5 cells) to the SAME `llm.chat` call — identical
+     code path, fewer prompts.
+
+     If (and only if) vLLM genuinely cannot serve the model (e.g. an
+     architecture it doesn't support), fall back to HF transformers with
+     **bounded micro-batches** — left-pad + `attention_mask`, a fixed
+     `BATCH_SIZE` tuned to VRAM — NOT one-example-at-a-time and NOT one
+     giant batch of everything. The static gate (Phase 4) flags
+     per-example `generate()` in a loop as an ERROR.
+
    - Real benchmarks: use `datasets.load_dataset(...)` for HuggingFace
      datasets (GSM8K, MATH, SVAMP, etc.). **Do not embed a synthetic
      mock dataset** unless Stage 5 explicitly says synthetic.
@@ -391,15 +428,18 @@ For each implementation task:
      rule above). The Stage 6a critic flags `device_map="auto"` as a
      spec deviation.
 
-   - **The whole GPU-inference block must be memory-safe AND load-once.**
-     `device_map` is only one of a family of mistakes that each cause an
-     OOM or a load failure mid-run. Use this canonical pattern and run the
-     checklist below — these are not optional "nice to haves", each line
-     prevents a specific crash we have hit or will hit:
+   - **HF fallback only: memory-safe, load-once, BOUNDED-BATCH inference.**
+     (Prefer vLLM per the Parallelism-first rule above; this block is for
+     when vLLM cannot serve the model.) `device_map` is only one of a
+     family of mistakes that each cause an OOM or a load failure mid-run.
+     Use this canonical pattern — note the loop is over **batches**, not
+     individual examples — and run the checklist below; each line prevents
+     a specific crash we have hit or will hit:
 
          # ── load ONCE, at module __main__ / run() start — NEVER inside the loop ──
          tok = AutoTokenizer.from_pretrained(
              MODEL_PATH, local_files_only=True, trust_remote_code=True)
+         tok.padding_side = "left"         # decoder-only: left-pad so gen aligns
          model = AutoModelForCausalLM.from_pretrained(
              MODEL_PATH,
              torch_dtype=torch.bfloat16,   # NEVER omit → default fp32 = 2× VRAM = OOM
@@ -409,11 +449,14 @@ For each implementation task:
          )
          model.eval()
          ...
-         for problem in problems:          # model already loaded; loop only does inference
-             ids = tok.apply_chat_template(msgs, add_generation_prompt=True,
-                                           return_tensors="pt").to(model.device)
+         BATCH_SIZE = 16                   # tune to VRAM; bounded, not 1, not all-N
+         prompts = [tok.apply_chat_template(m, add_generation_prompt=True,
+                                            tokenize=False) for m in all_msgs]
+         for i in range(0, len(prompts), BATCH_SIZE):   # loop over BATCHES
+             enc = tok(prompts[i:i + BATCH_SIZE], return_tensors="pt",
+                       padding=True).to(model.device)
              with torch.inference_mode():  # NEVER omit → grad buffers accumulate → OOM
-                 out = model.generate(ids, max_new_tokens=N, do_sample=False,
+                 out = model.generate(**enc, max_new_tokens=N, do_sample=False,
                                       eos_token_id=tok.eos_token_id,
                                       pad_token_id=tok.pad_token_id or tok.eos_token_id)
 
@@ -429,13 +472,19 @@ For each implementation task:
         silently downloading.
      5. Every `model.generate()` is inside `with torch.inference_mode():`.
      6. Inputs are moved to `model.device` (not a hardcoded `"cuda"`).
-     7. Generation is **per-example or small-batch**, never one giant batch
-        of all problems (KV-cache for N×long sequences OOMs).
+     7. Inference is **batched**, not one-example-at-a-time. Prefer vLLM
+        (`llm.chat(all_convs)` — continuous batching handles VRAM for you).
+        On the HF fallback, use **bounded micro-batches** (left-pad +
+        `attention_mask`, a fixed `BATCH_SIZE`) — never a `for problem in
+        problems: model.generate(...)` loop (sequential = hours; static
+        gate ERROR), and never one unbounded giant batch of all N (KV-cache
+        for N×long sequences OOMs). Bounded batches are the middle path.
      8. `eos_token_id` + `pad_token_id` are passed (clean stop).
 
      Record "GPU inference checklist: PASS" in the receipt (§0.6 area). The
      Stage 6a critic spot-checks these; a `from_pretrained` inside a loop,
-     a missing `torch_dtype`, or `device_map="auto"` is a D-CODE deviation.
+     a missing `torch_dtype`, `device_map="auto"`, or per-example
+     `model.generate()` in a loop is a D-CODE deviation.
 
 4. **Output format** —
    - Use `JSONL` output (one record per problem/seed/condition cell)
@@ -728,6 +777,40 @@ the failure in the receipt's "Push status" column as `❌ <error>`
 and STOP — the critic will mark D4 as FAIL and trigger retry. Better
 to fail loud here than to ship a missing file.
 
+### Step 4.5 — Environment designation + dependency pre-flight (MANDATORY)
+
+Your entrypoint will execute via `run_local` **in a conda environment on
+the host** — NOT inside the docker runtime image. The image's package
+list (vLLM etc.) does NOT apply to run_local. Two hard facts learned
+from a double-failure (run 284fe7b69d4f burned all retries on this):
+
+1. **The default env is bare.** A bare `python ...` entrypoint runs in
+   the default env, which may lack vLLM entirely. Every entrypoint MUST
+   begin with `source <conda_bin>/activate <env> && ...`.
+2. **`fast_query_server_info` only tracks torch / vllm / flash_attn per
+   env. It is NOT a package inventory.** Never infer that `datasets`,
+   `scipy`, `pandas`, … are missing (or present) from it — that exact
+   wrong inference made the previous run designate a `vllm`-only env
+   while two fully-stocked envs sat unused.
+
+So BEFORE you write the receipt's §4 entrypoint, run a **dependency
+pre-flight probe**: one `run_local` CPU job (seconds, $0) that checks
+every top-level import your pushed code makes, across the candidate
+envs:
+
+```bash
+DEPS='"vllm","datasets","transformers","scipy","numpy"'   # ← every top-level import in YOUR code
+bash "$SKILL_DIR/scripts/fast_submit.sh" --config "$SKILL_DIR/assets/base.conf.json" -c \
+  'for e in base r3l opsd infra; do echo "=== env: $e ==="; source /home/zsgpu/miniconda3/bin/activate $e && python -c "import importlib.util as u; [print(m, (\"OK\" if u.find_spec(m) else \"MISSING\")) for m in ['"$DEPS"']]"; done'
+# poll fast_query_exp_status until succeeded, read log_tail
+```
+
+Designate the env where **every** dep is OK (prefer one with
+`flash_attn` for inference workloads). Paste the probe's per-env matrix
+into the receipt §4 under "Environment designation". If NO env has all
+deps, STOP and `submit_result(status: error)` naming the missing
+packages — do not designate an env you have not verified.
+
 ## Phase 5 — Write the implementation receipt (MANDATORY, ALWAYS)
 
 **This step is non-negotiable.** The Stage 6b runner reads
@@ -800,14 +883,20 @@ file + function implements it. Anything in the contract not in a
 row here is a spec gap.
 
 ## 4. Runnable entrypoint
-The command the runner (Stage 6b) should invoke, with the
-per-project remote subdir prefix:
+
+### Environment designation (REQUIRED — Step 4.5 evidence)
+- Designated env: `<env>` (e.g. r3l)
+- Pre-flight probe run_id: `run_...`
+- Per-env import matrix from the probe log (paste it)
+
+The command the runner (Stage 6b) should invoke, with conda
+activation and the per-project remote subdir prefix:
 
   ### Smoke (runner runs this FIRST, ≤5 min)
-    cd omc/<project_id>/<iter_id> && python experiment.py --smoke --benchmark gsm8k --seed 42
+    source /home/zsgpu/miniconda3/bin/activate <env> && cd omc/<project_id>/<iter_id> && python experiment.py --smoke --benchmark gsm8k --seed 42
 
   ### Full (runner runs this only if smoke succeeded)
-    cd omc/<project_id>/<iter_id> && python experiment.py --benchmark gsm8k --k 5 --seed 42 ...
+    source /home/zsgpu/miniconda3/bin/activate <env> && cd omc/<project_id>/<iter_id> && python experiment.py --benchmark gsm8k --k 5 --seed 42 ...
 
 State explicitly what `--smoke` shrinks (e.g. "5 problems instead of
 1319, otherwise identical code path, identical schema, expected

@@ -98,6 +98,23 @@ done
   to fix the implementation before any retry burns more GPU. This is
   the safety net for hung-pipeline bugs.
 
+  **If the failure is `ModuleNotFoundError` / `ImportError`** (a missing
+  package in the entrypoint's conda env), additionally run the cheap
+  **env probe** (one CPU run_local, seconds, $0) and paste its per-env
+  matrix into your report — so the 6a retry can designate a working env
+  in ONE hop instead of guessing (a previous run burned all its retries
+  fixing one missing package per attempt):
+
+  ```bash
+  # Replace the module list with the imports the traceback names + the
+  # usual stack (vllm, datasets, transformers, scipy, numpy).
+  bash "$SKILL_DIR/scripts/fast_submit.sh" --config "$SKILL_DIR/assets/base.conf.json" -c \
+    'for e in base r3l opsd infra; do echo "=== env: $e ==="; source /home/zsgpu/miniconda3/bin/activate $e && python -c "import importlib.util as u; [print(m, (\"OK\" if u.find_spec(m) else \"MISSING\")) for m in [\"vllm\",\"datasets\",\"transformers\",\"scipy\",\"numpy\"]]"; done'
+  ```
+
+  Do NOT infer package presence from `fast_query_server_info` — it only
+  tracks torch / vllm / flash_attn per env, nothing else.
+
 ## Step 1b' — Smoke quality check (don't trust "succeeded")
 
 A smoke run that returns ``succeeded`` can still produce **garbage
