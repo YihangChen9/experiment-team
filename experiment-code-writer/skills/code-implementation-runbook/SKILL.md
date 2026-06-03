@@ -566,6 +566,25 @@ python3 -m pytest -q test_experiment.py              # pure-logic tests
 | import error in the test | Your pure logic is NOT import-safe (it ran GPU/dataset code at import). Move that work behind `__main__` / into `run()`. This is the Phase 2.5 self-check #6 failing late — fix it now. |
 | static gate `[error]` | Fix the syntax/undefined-name, re-run. |
 
+### Step 3.5.3 — Failure-mode router (classify, then fix the RIGHT way)
+
+A "test failed" is not one thing. Before you edit, **classify** the
+failure and apply the matching fix — treating every failure the same
+wastes iterations (e.g. re-running on a timeout, or rewriting logic on
+an import error). Tag the dominant failure in this round and act:
+
+| Failure tag | Signal | Targeted fix (do this, not a blind rewrite) |
+|---|---|---|
+| **syntax** | `SyntaxError`, `IndentationError`, static-gate `[error]` parse | Minimal edit to the exact line; do NOT touch logic. Re-gate. |
+| **import** | `ImportError` / `ModuleNotFoundError` at test import | Two sub-cases: (a) your pure logic ran GPU/dataset code at import → move it behind `__main__`/`run()` (Phase 2.5 #6); (b) a genuinely missing dep → it's pre-installed on the remote, so guard the import or move it into the function, don't `pip install` locally. |
+| **test** (assertion) | `AssertionError`, wrong value | Decide CODE-wrong vs TEST-wrong: recompute the expected value by hand. If the code is wrong, fix the function; if your hand-graded expectation was wrong, fix the test. Never weaken the assertion to pass. |
+| **lint** | ruff/pyflakes warning (non-error) | Fix only if cheap (unused import, undefined name). Style nits don't block — proceed. |
+| **timeout** | the test itself hangs / >30s | Your pure-logic test must NOT do GPU/dataset/network work. If it does, you tested the wrong layer — move the heavy call out and test only the pure function. |
+| **runtime** | `TypeError`/`KeyError`/`ValueError` in the function under test | A real logic bug the test caught — exactly what this loop is for. Fix the function, re-run. |
+
+Pick the tag, apply its row, re-run. One classified fix per iteration
+beats shotgun edits.
+
 **Hard cap: 3 iterations.** This is a loop, not an infinite refine.
 After 3 rounds:
 - If green → proceed.
