@@ -115,13 +115,26 @@ work around it by guessing flags.
 - `env_strategy: <conda env name>` (LLM / GPU experiments) → the `-c`
   one-liner below, conda activation included in the receipt's command.
 - `env_strategy: uv-venv` (non-LLM / CPU experiments — BO, classical ML,
-  simulation; issue #117) → submit with `--yaml` using
-  `assets/uv_venv_local.yaml`: copy the template, fill `<project_id>`,
-  `<iter_id>` and put the receipt's PLAIN entrypoint in `run:` prefixed
-  with `.venv/bin/python`. The `setup:` block builds the venv from the
-  pushed `requirements.txt` (verified live: `run_479a2234f20a`). If the
-  receipt says `gpu_required: false`, Step 0.5's GPU pick is skipped and
-  no `CUDA_VISIBLE_DEVICES` prefix is needed.
+  simulation; issue #117) → **the environment is ALREADY BUILT**: Stage
+  6a ran a dedicated env-build (`env_build_run` in the receipt, with
+  `"env_ready": true`) that left a verified
+  `omc/<project_id>/<iter_id>/.venv` in the workspace (persistence
+  verified: `run_322bfa5384e0`→`run_c4e98cd53fa2`). You install
+  NOTHING. Submit smoke/full as plain `-c` one-liners using the
+  receipt's `.venv/bin/python ...` entrypoint VERBATIM. If the receipt
+  says `gpu_required: false`, skip Step 0.5 entirely — no
+  `CUDA_VISIBLE_DEVICES` prefix.
+
+  Guards:
+  - Receipt has `env_strategy: uv-venv` but NO succeeded
+    `env_build_run` → that's a Stage 6a contract violation. Report
+    `blocked_env_not_built` (Step 3), do not build it yourself by
+    guessing.
+  - Entrypoint fails with `.venv/bin/python: No such file` (workspace
+    was wiped after the env-build) → rebuild ONCE with
+    `assets/uv_venv_local.yaml` exactly as 6a configured it (same
+    requirements.txt), then retry the smoke. If the rebuild fails,
+    report `blocked_env_rebuild_failed` with both run_ids.
 
 ```bash
 # Step 1a (conda path) — submit the smoke run first.
@@ -137,19 +150,15 @@ echo "SMOKE_RID=$SMOKE_RID"
 ```
 
 ```bash
-# Step 1a (uv-venv path) — same gate, different submission shape.
-cp "$SKILL_DIR/assets/uv_venv_local.yaml" /tmp/uv_smoke.yaml
-# Edit /tmp/uv_smoke.yaml: fill omc/<project_id>/<iter_id>, set run: to
-#   .venv/bin/python <receipt smoke entrypoint, e.g. experiment.py --smoke --seed 42>
-# Keep/delete the CPU-torch index line per the receipt's requirements.txt note.
+# Step 1a (uv-venv path) — env already built by 6a; plain -c, zero installs.
+SMOKE_CMD="cd omc/<project_id>/<iter_id>/ && <receipt smoke entrypoint VERBATIM, e.g. .venv/bin/python experiment.py --smoke --seed 42>"
 SMOKE_RID=$(bash "$SKILL_DIR/scripts/fast_submit.sh" \
   --config "$SKILL_DIR/assets/base.conf.json" \
-  --yaml /tmp/uv_smoke.yaml \
+  -c "$SMOKE_CMD" \
   2>&1 | tee /tmp/submit_smoke.log | grep -oE 'run_[a-f0-9]+' | head -1)
 echo "SMOKE_RID=$SMOKE_RID"
-# The full run reuses the same yaml with run: pointing at the full
-# entrypoint — the venv from the smoke run is already in place; keep the
-# setup: block anyway (idempotent, `uv venv` over an existing .venv is fine).
+# Full run: same shape with the receipt's full entrypoint. The .venv is
+# the one env-build created — no setup block, no installs, no conda.
 ```
 
 Then poll it (use the same single-bash-with-sleep pattern from Step

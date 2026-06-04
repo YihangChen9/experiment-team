@@ -857,31 +857,46 @@ Designate the env where **every** dep is OK (prefer one with
 `flash_attn` for inference workloads). Paste the probe's per-env matrix
 into the receipt §4 under "Environment designation".
 
-**If NO conda env has all deps → designate the `uv-venv` strategy**
-(issue #117 — typical for non-LLM / CPU experiments: Bayesian
-optimization, classical ML, simulation, whose stacks like
-gpytorch/botorch are not preinstalled anywhere). Verified live
-(`run_479a2234f20a`): the host has `uv`, and the runner can build a
-fresh venv + install your pinned requirements in ~1 min. Your
-obligations on this path:
+**If NO conda env has all deps → BUILD the environment yourself: the
+`uv-venv` strategy** (issue #117 — typical for non-LLM / CPU
+experiments: Bayesian optimization, classical ML, simulation, whose
+stacks like gpytorch/botorch are not preinstalled anywhere).
 
-1. **Ship a pinned `requirements.txt`** next to your code (push it in
-   Phase 4 like any other file). Every top-level import in your code
+**Iron rule: the environment is fully built and import-verified BEFORE
+any experiment run.** The runner installs NOTHING at experiment time —
+it receives a ready `.venv` and just executes. All of this uses the
+existing fast_submit run_local path (zero infra changes). Verified
+live: `run_479a2234f20a` (uv venv + install + run works; host has uv,
+pypi reachable) and `run_322bfa5384e0`→`run_c4e98cd53fa2` (the `.venv`
+persists in the remote workspace across runs).
+
+Your obligations, in order:
+
+1. **Ship a pinned `requirements.txt`** next to your code and push it
+   in Phase 4 like any other file. Every top-level import in your code
    maps to a pinned line. For torch-using CPU experiments note
-   `# cpu-only` at the top so the runner keeps the CPU index-url.
-2. Receipt §4 says:
-   - `env_strategy: uv-venv` (instead of a conda env name)
-   - `gpu_required: false | true` (false → runner skips GPU pick)
-   - smoke/full entrypoints written as PLAIN `python experiment.py ...`
-     commands — the runner wraps them with the venv
-     (`.venv/bin/python`) via `assets/uv_venv_local.yaml`; do NOT
-     prefix conda activation on this path.
-3. Local sanity (no remote round-trip): `uv venv /tmp/req_check &&
-   uv pip install --python /tmp/req_check/bin/python -r requirements.txt`
-   must resolve cleanly before you push.
+   `# cpu-only` at the top (the env-build keeps torch on the CPU
+   index — no multi-GB CUDA download).
+2. **Submit the ENV-BUILD run** (after the Phase 4 push, before the
+   receipt): copy `assets/uv_venv_local.yaml` (from the
+   experiment-infra skill), fill `<project_id>/<iter_id>` and the
+   import list (EVERY top-level import your code makes), submit via
+   `fast_submit.sh --yaml`, poll to `succeeded`, and confirm
+   `"env_ready": true` in the log_tail. This builds
+   `omc/<project_id>/<iter_id>/.venv` once; it persists for all
+   subsequent runs.
+3. Receipt §4 says:
+   - `env_strategy: uv-venv`
+   - `env_build_run: run_...` + the env-build RESULT_JSON (the proof
+     the env exists and imports verified)
+   - `gpu_required: false | true` (false → runner skips the GPU pick)
+   - smoke/full entrypoints written as `.venv/bin/python
+     experiment.py ...` — NO conda prefix, NO install steps.
 
-Only `submit_result(status: error)` if even the uv path cannot work
-(e.g. a dep needs a GPU build not available on the host).
+If the env-build run fails (a dep cannot resolve / needs a GPU build
+unavailable on the host), fix requirements.txt and re-submit the
+env-build; only `submit_result(status: error)` if it genuinely cannot
+work. Do NOT hand the runner an unbuilt or unverified environment.
 
 ## Phase 5 — Write the implementation receipt (MANDATORY, ALWAYS)
 
@@ -963,9 +978,10 @@ row here is a spec gap.
 - Per-env import matrix from the probe log (paste it)
 - If `uv-venv`: `requirements`: `omc/<project_id>/<iter_id>/requirements.txt`
   (pinned, pushed in Phase 4; `# cpu-only` header if torch should come
-  from the CPU index) — entrypoints below are then PLAIN `python ...`
-  commands with NO conda prefix; the runner wraps them via
-  `assets/uv_venv_local.yaml`.
+  from the CPU index), `env_build_run`: `run_...` (the SUCCEEDED
+  env-build with `"env_ready": true` — paste its RESULT_JSON), and the
+  entrypoints below are `.venv/bin/python experiment.py ...` — the env
+  is already built; the runner installs nothing.
 
 The command the runner (Stage 6b) should invoke, with conda
 activation and the per-project remote subdir prefix:
