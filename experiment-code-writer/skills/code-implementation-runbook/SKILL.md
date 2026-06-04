@@ -898,6 +898,41 @@ unavailable on the host), fix requirements.txt and re-submit the
 env-build; only `submit_result(status: error)` if it genuinely cannot
 work. Do NOT hand the runner an unbuilt or unverified environment.
 
+### Step 4.6 — CPU experiments: run the smoke YOURSELF before the receipt (MANDATORY when `gpu_required: false`)
+
+The Phase 3.5 local test loop deliberately tests only pure logic — for
+GPU/LLM experiments the model classes can't run locally. **For a CPU
+experiment that calibration is wrong: the model stack itself is
+runnable, and skipping it leaves the main failure surface untested.**
+Real case (run 0fdfc2b8223e): 11 pure-logic tests passed, but the
+GPyTorch `ExactGP` subclass was missing `forward()` — the very first
+model call raised `NotImplementedError`, the 6b smoke died in 3 s, and
+two full 6a→6b→critic cycles burned on a bug a single local model call
+would have caught.
+
+So when `gpu_required: false`, after the environment is designated
+(Step 4.5) and the code is pushed (Phase 4), **submit the smoke
+entrypoint yourself** — one run_local, the exact smoke command from
+your receipt draft, in the designated env:
+
+```bash
+bash "$SKILL_DIR/scripts/fast_submit.sh" --config "$SKILL_DIR/assets/base.conf.json" -c \
+  "source /home/zsgpu/miniconda3/bin/activate <env> && cd omc/<project_id>/<iter_id> && <smoke command>"
+# (uv-venv strategy: use `.venv/bin/python <smoke command>` instead of conda activation)
+# poll to terminal; require status=succeeded AND a parseable RESULT_JSON in log_tail
+```
+
+- Smoke `succeeded` + RESULT_JSON → paste the run_id + RESULT_JSON into
+  receipt §4 under `smoke_validated_by_6a: run_...`. The 6b runner will
+  see this, SKIP its own smoke, and go straight to the pilot/full run.
+- Smoke FAILED → that is YOUR bug, caught in YOUR loop where it is
+  cheapest. Route it through the Step 3.5.3 failure-mode router (a
+  runtime `NotImplementedError`/`TypeError` = fix the class, re-push,
+  re-smoke). Do NOT write the receipt until the smoke passes.
+
+(GPU experiments keep the existing division: the runner smokes first on
+the GPU it picked — 6a cannot cheaply do that.)
+
 ## Phase 5 — Write the implementation receipt (MANDATORY, ALWAYS)
 
 **This step is non-negotiable.** The Stage 6b runner reads

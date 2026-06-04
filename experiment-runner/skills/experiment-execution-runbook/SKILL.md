@@ -100,6 +100,14 @@ runner uses this as a 5-minute proof-of-pipeline before committing
 hours of GPU to a full run that may hang on an architectural bug
 (wrong worker pool config, broken loader, hung dependency).
 
+**Exception — smoke already validated by 6a**: if receipt §4 carries
+`smoke_validated_by_6a: run_...` (CPU experiments — 6a ran the smoke
+itself per its Step 4.6), verify that run_id reads `succeeded` via
+`fast_query_exp_status` and SKIP your own smoke: go straight to the
+pilot/full submission. Re-smoking proven code just doubles the cycle.
+If the run_id does NOT read succeeded, treat the receipt as invalid
+(`blocked_smoke_failure`, Step 3) — do not improvise.
+
 **Use the receipt's "Runnable entrypoint" command VERBATIM.** Copy the
 smoke command exactly as Stage 6a wrote it in
 `stage6_implementation_receipt.md` — do NOT invent or add flags
