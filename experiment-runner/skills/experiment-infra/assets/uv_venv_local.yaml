@@ -1,0 +1,34 @@
+# uv_venv_local.yaml — run_local execution for NON-LLM / CPU experiments
+# (issue #117: BO / classical-ML / optimization / simulation code whose deps
+# are NOT preinstalled in any host conda env).
+#
+# Verified live: run_479a2234f20a (uv venv + uv pip install + run, succeeded).
+# uv is preinstalled on the host at ~/.local/bin/uv; pypi egress works.
+#
+# Fill the three <placeholders>, submit with:
+#   bash scripts/fast_submit.sh --config assets/base.conf.json --yaml <this file>
+#
+# Notes:
+# - run_local concatenates setup+run into ONE bash script: cwd and env vars
+#   set in setup persist into run. Do not re-cd.
+# - The venv lives inside the per-project remote prefix (inspectable,
+#   per-project isolated, no /tmp litter).
+# - CPU torch: keep the --index-url line so a 2 GB CUDA torch download is
+#   not pulled for a CPU-only experiment. Delete it if torch is not needed.
+
+name: uv-venv-local
+
+resources:
+    cpus: 4+
+
+setup: |
+    set -e
+    export UV_LINK_MODE=copy
+    cd omc/<project_id>/<iter_id>
+    uv venv .venv --python 3.12
+    # CPU-only torch first (delete if the experiment does not use torch):
+    uv pip install --python .venv/bin/python torch --index-url https://download.pytorch.org/whl/cpu
+    uv pip install --python .venv/bin/python -r requirements.txt
+
+run: |
+    .venv/bin/python <entrypoint, e.g. experiment.py --smoke --seed 42>

@@ -855,9 +855,33 @@ bash "$SKILL_DIR/scripts/fast_submit.sh" --config "$SKILL_DIR/assets/base.conf.j
 
 Designate the env where **every** dep is OK (prefer one with
 `flash_attn` for inference workloads). Paste the probe's per-env matrix
-into the receipt §4 under "Environment designation". If NO env has all
-deps, STOP and `submit_result(status: error)` naming the missing
-packages — do not designate an env you have not verified.
+into the receipt §4 under "Environment designation".
+
+**If NO conda env has all deps → designate the `uv-venv` strategy**
+(issue #117 — typical for non-LLM / CPU experiments: Bayesian
+optimization, classical ML, simulation, whose stacks like
+gpytorch/botorch are not preinstalled anywhere). Verified live
+(`run_479a2234f20a`): the host has `uv`, and the runner can build a
+fresh venv + install your pinned requirements in ~1 min. Your
+obligations on this path:
+
+1. **Ship a pinned `requirements.txt`** next to your code (push it in
+   Phase 4 like any other file). Every top-level import in your code
+   maps to a pinned line. For torch-using CPU experiments note
+   `# cpu-only` at the top so the runner keeps the CPU index-url.
+2. Receipt §4 says:
+   - `env_strategy: uv-venv` (instead of a conda env name)
+   - `gpu_required: false | true` (false → runner skips GPU pick)
+   - smoke/full entrypoints written as PLAIN `python experiment.py ...`
+     commands — the runner wraps them with the venv
+     (`.venv/bin/python`) via `assets/uv_venv_local.yaml`; do NOT
+     prefix conda activation on this path.
+3. Local sanity (no remote round-trip): `uv venv /tmp/req_check &&
+   uv pip install --python /tmp/req_check/bin/python -r requirements.txt`
+   must resolve cleanly before you push.
+
+Only `submit_result(status: error)` if even the uv path cannot work
+(e.g. a dep needs a GPU build not available on the host).
 
 ## Phase 5 — Write the implementation receipt (MANDATORY, ALWAYS)
 
@@ -933,9 +957,15 @@ row here is a spec gap.
 ## 4. Runnable entrypoint
 
 ### Environment designation (REQUIRED — Step 4.5 evidence)
-- Designated env: `<env>` (e.g. r3l)
+- `env_strategy`: `<conda env name, e.g. r3l>` | `uv-venv`
+- `gpu_required`: true | false
 - Pre-flight probe run_id: `run_...`
 - Per-env import matrix from the probe log (paste it)
+- If `uv-venv`: `requirements`: `omc/<project_id>/<iter_id>/requirements.txt`
+  (pinned, pushed in Phase 4; `# cpu-only` header if torch should come
+  from the CPU index) — entrypoints below are then PLAIN `python ...`
+  commands with NO conda prefix; the runner wraps them via
+  `assets/uv_venv_local.yaml`.
 
 The command the runner (Stage 6b) should invoke, with conda
 activation and the per-project remote subdir prefix:

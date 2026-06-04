@@ -110,8 +110,21 @@ If the receipt's entrypoint looks wrong or incomplete, that is a Stage 6a
 bug — report it (Step 3, `status: blocked_smoke_failure`), do not
 work around it by guessing flags.
 
+**Which submission shape? Read the receipt §4 "Environment designation":**
+
+- `env_strategy: <conda env name>` (LLM / GPU experiments) → the `-c`
+  one-liner below, conda activation included in the receipt's command.
+- `env_strategy: uv-venv` (non-LLM / CPU experiments — BO, classical ML,
+  simulation; issue #117) → submit with `--yaml` using
+  `assets/uv_venv_local.yaml`: copy the template, fill `<project_id>`,
+  `<iter_id>` and put the receipt's PLAIN entrypoint in `run:` prefixed
+  with `.venv/bin/python`. The `setup:` block builds the venv from the
+  pushed `requirements.txt` (verified live: `run_479a2234f20a`). If the
+  receipt says `gpu_required: false`, Step 0.5's GPU pick is skipped and
+  no `CUDA_VISIBLE_DEVICES` prefix is needed.
+
 ```bash
-# Step 1a — submit the smoke run first.
+# Step 1a (conda path) — submit the smoke run first.
 # SMOKE_CMD = the receipt's "Runnable entrypoint (smoke)" VERBATIM, with
 # CUDA_VISIBLE_DEVICES=$GPU (from Step 0.5) prepended so it lands on the
 # free GPU you picked. Do NOT add other flags the receipt didn't list.
@@ -121,6 +134,22 @@ SMOKE_RID=$(bash "$SKILL_DIR/scripts/fast_submit.sh" \
   -c "$SMOKE_CMD" \
   2>&1 | tee /tmp/submit_smoke.log | grep -oE 'run_[a-f0-9]+' | head -1)
 echo "SMOKE_RID=$SMOKE_RID"
+```
+
+```bash
+# Step 1a (uv-venv path) — same gate, different submission shape.
+cp "$SKILL_DIR/assets/uv_venv_local.yaml" /tmp/uv_smoke.yaml
+# Edit /tmp/uv_smoke.yaml: fill omc/<project_id>/<iter_id>, set run: to
+#   .venv/bin/python <receipt smoke entrypoint, e.g. experiment.py --smoke --seed 42>
+# Keep/delete the CPU-torch index line per the receipt's requirements.txt note.
+SMOKE_RID=$(bash "$SKILL_DIR/scripts/fast_submit.sh" \
+  --config "$SKILL_DIR/assets/base.conf.json" \
+  --yaml /tmp/uv_smoke.yaml \
+  2>&1 | tee /tmp/submit_smoke.log | grep -oE 'run_[a-f0-9]+' | head -1)
+echo "SMOKE_RID=$SMOKE_RID"
+# The full run reuses the same yaml with run: pointing at the full
+# entrypoint — the venv from the smoke run is already in place; keep the
+# setup: block anyway (idempotent, `uv venv` over an existing .venv is fine).
 ```
 
 Then poll it (use the same single-bash-with-sleep pattern from Step
