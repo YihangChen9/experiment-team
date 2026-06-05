@@ -542,6 +542,21 @@ For each implementation task:
    - At the very end, print a clearly delimited
      `=== RESULT_JSON: {...} ===` block summarising aggregate
      metrics, so the runner's `log_tail` capture sees it.
+   - **Run-state isolation (MANDATORY).** The smoke run and the full
+     run execute in the SAME remote workspace, back to back. Any state
+     your driver persists — resume/progress manifests
+     (`progress.json`), partial-output JSONL, checkpoints, caches —
+     MUST be scoped so one invocation can never contaminate another:
+     either write under a per-invocation directory
+     (`outputs/<mode>_<seed>_<timestamp>/`) or key the manifest by
+     mode+full-index-space and ignore entries from other modes.
+     Real failure (run 2a8935af8c61): the full run's `progress.json`
+     inherited the smoke run's completed indices 0–9 and silently
+     skipped 30 of 3,957 inference calls — REJECTED on the
+     pre-registered 100%-completion criterion. If you implement
+     resume-on-restart at all, assert at startup that the manifest's
+     declared index space matches this invocation's, and refuse to
+     resume across modes.
 
 5. **MANDATORY: a `--smoke` mode** —
    The driver script MUST support a `--smoke` flag (or equivalent CLI
