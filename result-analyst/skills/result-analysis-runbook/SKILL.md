@@ -1,12 +1,7 @@
 ---
 name: result-analysis-runbook
-description: Stage-7 runbook — verify the pre-registration contract is intact, ingest Stage 6 raw results, run the locked primary analysis (no fishing, no HARKing), produce a publication-grade results document with reproducibility receipts. Activate when you receive a "Stage 7 (Result Analysis)" task.
----
-
----
-name: result-analysis-runbook
-description: Stage 7 (Result Analysis) runbook. Reads the Stage 4 methodology (hypotheses + pre-registered statistical tests), the Stage 5 experiment plan (assignments + power analysis), and the Stage 6 experimentalist report (run_ids + metrics + log_tail), then produces a confirmatory analysis that honours the pre-registration and labels every claim as confirmatory or exploratory.
-allowed-tools: Read, Write
+description: Stage 7 (Result Analysis) runbook. Reads the Stage 4 methodology (hypotheses + pre-registered statistical tests), the Stage 5 experiment plan (assignments + power analysis), and the Stage 6 experimentalist report (run_ids + metrics + log_tail), then produces a confirmatory analysis (no fishing, no HARKing) with publication-grade figures, labelling every claim confirmatory or exploratory. Activate when you receive a "Stage 7 (Result Analysis)" task.
+allowed-tools: Bash, Read, Write
 ---
 
 # Stage 7 — Result Analysis
