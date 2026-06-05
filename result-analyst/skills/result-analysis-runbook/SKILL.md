@@ -126,49 +126,36 @@ confirmatory.
 
 A results section without figures reads like a lab note, not a paper.
 Stage 8's paper-writer auto-embeds any ``stage7_*.png`` it finds in the
-workspace (its Step 1.5) — your job is to put them there.
+workspace (its Step 1.5) — your job is to put them there. Use the
+**result-figures skill** (``load_skill("result-figures")``); do NOT
+hand-write matplotlib (agent-written plotting code varies run to run —
+the renderer is tested, you only supply numbers).
 
-Render **2–3 figures** from the confirmatory numbers (the aggregates in
-RESULT_JSON / your Phase 3 tables — no remote data fetch needed):
+Render **2–3 figures** from your Phase 3 tables:
 
-1. **Primary outcome per condition** — bar chart with 95% CI error bars
-   when intervals are available.
-2. **Paired / comparative structure** — whatever fits the design: a
-   McNemar 2×2 discordant-pair matrix (paired classification), a
-   per-method box/strip of the outcome (multi-method comparison), or a
-   regret-vs-budget curve (optimization).
-3. *(Optional)* one diagnostic — truncation/extraction rates, or the
-   headline sensitivity delta.
+1. **Primary outcome per condition** — ``type: bar`` with 95% CI.
+2. **Paired / comparative structure** — whatever fits the design:
+   ``matrix2x2`` (McNemar discordant pairs), ``box`` (per-method
+   distributions), or ``line`` (regret/learning curves).
+3. *(Optional)* one diagnostic (truncation/extraction rates, headline
+   sensitivity delta) — ``bar`` or ``grouped_bar``.
 
-The host python often lacks matplotlib — build a throwaway venv
-(seconds, the host has ``uv``):
+Steps:
 
 ```bash
-uv venv /tmp/stage7_plots --python 3.12 2>/dev/null || uv venv /tmp/stage7_plots
-uv pip install --python /tmp/stage7_plots/bin/python matplotlib numpy
-```
-
-Then write one plotting script (values inlined from your tables, Agg
-backend, no display) and run it with ``/tmp/stage7_plots/bin/python``,
-saving PNGs **into the project workspace** with the exact naming
-contract the paper-writer globs:
-
-```
-<project_workspace>/stage7_fig1_primary_outcome.png
-<project_workspace>/stage7_fig2_<design_specific>.png
-```
-
-Embed each figure in your report (Phase 7) at the point where its
-numbers are discussed, using the caption form the paper-writer parses:
-
-```markdown
-![Figure 1: Primary outcome per condition with 95% CI.](stage7_fig1_primary_outcome.png)
+# 1. write the spec (numbers copied from YOUR tables, nothing new):
+write("<project_workspace>/stage7_figs.json", <spec per the skill's SKILL.md>)
+# 2. render into the workspace:
+bash "$SKILL_DIR/scripts/bootstrap.sh" <project_workspace>/stage7_figs.json -o <project_workspace>
+# 3. paste the printed ![Figure N: …](stage7_….png) embed lines into your
+#    report at the point where those numbers are discussed.
 ```
 
 Rules:
 - Figures show ONLY numbers that appear in your tables — a figure is a
   view of the confirmatory data, never a new analysis.
-- Label axes with units; title states the n.
+- Filenames MUST match ``stage7_*.png`` (the paper-writer's embed glob);
+  the renderer enforces this.
 - If rendering is genuinely impossible (no uv, no network for pip),
   say so explicitly in §8 Limitations — silence is not an option.
 
