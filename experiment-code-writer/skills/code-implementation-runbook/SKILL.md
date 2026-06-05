@@ -16,6 +16,23 @@ Your job is **translation, not design**. Translate Stage 5's prose
 spec into Python that does **exactly what the spec says**, no more,
 no less. The Stage 5 plan is the contract; you do not amend it.
 
+**Stage 5 is the SINGLE SOURCE OF TRUTH — it supersedes the original
+CEO task / topic.** Stage 4 and Stage 5 exist precisely to refine and
+correct the initial idea: the debate may have changed parameters,
+equalised budgets, dropped a confound, or tightened a control that the
+CEO's one-line task got wrong. When `stage5_experiment_designer.md`
+(or `stage4_methodology_designer.md`) specifies a value that differs
+from the CEO task in your dispatch description or your memory — e.g.
+`max_new_tokens`, sample size, seeds, decoding params, number of
+conditions — **implement the Stage 5 value, NOT the CEO task value.**
+Stage 5 always wins. A real failure (run be7144a49333): Stage 5 locked
+`max_new_tokens=256` for *both* conditions to eliminate a truncation
+confound, but the code used `{"direct": 16, "cot": 256}` "because the
+CEO task said 16/256" — the Stage 6a critic auto-REJECTed it (D1/D2
+contract violation) and the whole stage failed. In your receipt's
+spec-coverage matrix, cite the Stage 5 section (`stage5_…md §N`) for
+every parameter — never the CEO task.
+
 **Default mode: ADAPT, not REWRITE.** Stage 5 produces a file called
 `stage5_codebase_pin.md` that names the upstream codebase you must
 clone and lists the exact files + lines you will change. Your job is
@@ -25,6 +42,31 @@ keep everything else untouched. Writing from scratch is the
 USABLE UPSTREAM FOUND), and it triggers extra critic scrutiny.
 
 ## Phase 0 — Honour the Stage 5 upstream pin
+
+### Step 0.0 — RETRY? Inventory existing state FIRST (MANDATORY)
+
+If your task description contains retry feedback (a stub warning, a
+critic rejection, "previous attempt..."), a previous attempt may have
+already done most of the work. **Do NOT restart the analysis from
+zero** — a real run (083041abd013) burned all 4 attempts re-discovering
+the same facts and died of step exhaustion each time, with the actual
+code sitting finished in `upstream/` and only the receipt missing.
+
+Inventory what already exists, in this order, and SKIP every step whose
+output is already on disk:
+
+```bash
+ls <project_workspace>/upstream 2>/dev/null && cd <project_workspace>/upstream && git log --oneline -3   # adaptation commit already there?
+ls /tmp/stage6_impl/<project_id>/ 2>/dev/null                          # from-scratch staging already there?
+read("stage6_implementation_receipt.md")                               # receipt already drafted?
+bash "$SKILL_DIR/scripts/fast_query_working_dir.sh" --max-depth 4 | grep <project_id>   # already pushed?
+```
+
+Then complete ONLY the missing tail of the pipeline (typically: push →
+receipt → submit). If the code is written and pushed and only the
+receipt is missing, write the receipt and submit — that is a 2-minute
+finish, not a fresh task. Record in the receipt that this attempt
+resumed from prior state.
 
 Read `stage5_codebase_pin.md` from the project workspace first.
 
@@ -99,6 +141,7 @@ instead of improvising:
 3. Each planned change maps to a concrete spec line; none is "while I'm here" scope creep.
 4. My planned edits stay within the table's LOC estimate (±50%).
 5. The plan adds no new IV/DV/parameter/metric beyond the Stage 4/5 contract.
+6. Every numeric/config value I will hardcode (max_new_tokens, seeds, sample sizes, decoding params, n_conditions) matches `stage5_experiment_designer.md` / `stage4_methodology_designer.md` **exactly** — NOT the CEO task. If the CEO task and Stage 5 disagree, I am using the Stage 5 value. (Run be7144a49333 died here: code used the CEO task's `max_new_tokens=16` for the direct condition; Stage 5 had locked `256` for both.)
 
 If any answer is NO, the pin is wrong or insufficient — that is a
 Stage 5 amendment, not something you fix by editing more files.
@@ -147,6 +190,29 @@ Classify the post-patch result with the same table as Step 0.1:
   extractor / scorer / dataset loader is sacred — do not patch
   them; if you think you need to, Stage 5 picked the wrong
   upstream.**
+
+### Step 0.3.5 — If the pin itself is BROKEN (hallucinated commit / files)
+
+Distinct from failing tests: sometimes the pin names a commit that
+does not exist (`git fetch origin <sha>` → "couldn't find remote ref")
+or an adaptation-surface file that is absent from the tree (real case:
+pin named `simple_evals/gsm8k_eval.py`; the repo only has
+`mgsm_eval.py`). Stage 5 hallucinated — handle it pragmatically, in
+this order:
+
+1. **Commit unreachable but repo + adaptation surface valid** → resolve
+   to `origin/HEAD`, document the deviation in the receipt
+   (`pin_deviation: commit <sha> unreachable, resolved to <head_sha>`),
+   and continue the pin path.
+2. **Named files absent / adaptation surface impossible** → the pin is
+   unusable. Take the from-scratch path (Step 0.4) and record
+   `path_taken: from-scratch (pin broken: <one-line reason>)` in the
+   receipt §0 — the Stage 6 critic and the engine surface this to
+   Stage 5 so the pin author learns.
+
+Either way: decide ONCE, write the decision into the receipt
+immediately, and move on. Do not re-litigate the pin on a retry —
+Step 0.0's inventory will show the decision already made.
 
 ### Step 0.4 — If the pin says NO USABLE UPSTREAM FOUND
 
@@ -310,6 +376,43 @@ For each implementation task:
    files from one project clobbering another's local staging dir.
 
 3. **Strict spec compliance rules** —
+   - **Parallelism-first (batch by default — the runtime ships vLLM).**
+     An experiment is an embarrassingly parallel grid: every
+     (problem × condition × seed) cell is independent. Do NOT write a
+     `for` loop that calls `model.generate()` once per example — that
+     runs one forward pass at a time and turns a real dataset (1k–10k
+     items) into a multi-hour single-process job, the timeout we keep
+     hitting. **Flatten every independent cell into ONE prompt list and
+     hand it to a batching engine.** The default runtime image
+     (`vllm_w_flashattn`) has **vLLM 0.11.0** preinstalled — that is the
+     intended inference path, not raw `transformers` looping:
+
+         from vllm import LLM, SamplingParams
+         llm = LLM(model=MODEL_PATH, dtype="bfloat16",
+                   gpu_memory_utilization=0.90, max_model_len=4096,
+                   trust_remote_code=True)            # load ONCE
+         sp = SamplingParams(temperature=0.0, max_tokens=256)  # greedy
+         # Build the FULL workload: every cell of the grid, flattened.
+         convs = [[{"role": "user", "content": build_prompt(cell)}]
+                  for cell in all_cells]               # cheap, no GPU
+         outs = llm.chat(convs, sp)                    # ONE call; vLLM
+                                                       # batches internally
+         texts = [o.outputs[0].text for o in outs]     # aligned to all_cells
+
+     `llm.chat(...)` applies the model's chat template internally (so the
+     "ALWAYS use the chat template" rule below is satisfied for free), and
+     vLLM does continuous batching + paged KV-cache, so you get
+     throughput without hand-tuning batch sizes. `--smoke` passes a
+     SHORT `all_cells` (5 cells) to the SAME `llm.chat` call — identical
+     code path, fewer prompts.
+
+     If (and only if) vLLM genuinely cannot serve the model (e.g. an
+     architecture it doesn't support), fall back to HF transformers with
+     **bounded micro-batches** — left-pad + `attention_mask`, a fixed
+     `BATCH_SIZE` tuned to VRAM — NOT one-example-at-a-time and NOT one
+     giant batch of everything. The static gate (Phase 4) flags
+     per-example `generate()` in a loop as an ERROR.
+
    - Real benchmarks: use `datasets.load_dataset(...)` for HuggingFace
      datasets (GSM8K, MATH, SVAMP, etc.). **Do not embed a synthetic
      mock dataset** unless Stage 5 explicitly says synthetic.
@@ -348,6 +451,88 @@ For each implementation task:
      `model.generate(input_ids=tokenizer(prompt).input_ids, ...)` (raw
      prompt, no chat template) — that's the no-stop-token failure mode
      observed in a prior run.
+
+   - **Model loading: load onto ONE explicit device — `device_map="cuda:0"`,
+     NEVER `device_map="auto"`** (for a single model that fits on one GPU,
+     which is every ≤~30B model on an 80 GB card). Use exactly what Stage 5 /
+     the reference template specifies:
+
+         model = AutoModelForCausalLM.from_pretrained(
+             MODEL_PATH,
+             torch_dtype=torch.bfloat16,
+             device_map="cuda:0",          # single device — NOT "auto"
+             local_files_only=True, trust_remote_code=True,
+         )
+
+     Why this matters (real failure, run 1c9befd9a898): the code used
+     `device_map="auto"`. On a contended GPU, `accelerate` silently shards
+     the model across GPU + CPU ("Some parameters are on the meta device
+     because they were offloaded to the cpu"), then OOMs at the first
+     `model.generate()` — a confusing mid-run crash. With an explicit
+     `device_map="cuda:0"`, a too-full GPU fails LOUDLY at load time
+     (clear error, no CPU offload, no silent activation OOM). Do not
+     "improve" the spec's `cuda:0` into `"auto"` — Stage 5's loading
+     kwargs are part of the locked contract (see the Stage-5-authoritative
+     rule above). The Stage 6a critic flags `device_map="auto"` as a
+     spec deviation.
+
+   - **HF fallback only: memory-safe, load-once, BOUNDED-BATCH inference.**
+     (Prefer vLLM per the Parallelism-first rule above; this block is for
+     when vLLM cannot serve the model.) `device_map` is only one of a
+     family of mistakes that each cause an OOM or a load failure mid-run.
+     Use this canonical pattern — note the loop is over **batches**, not
+     individual examples — and run the checklist below; each line prevents
+     a specific crash we have hit or will hit:
+
+         # ── load ONCE, at module __main__ / run() start — NEVER inside the loop ──
+         tok = AutoTokenizer.from_pretrained(
+             MODEL_PATH, local_files_only=True, trust_remote_code=True)
+         tok.padding_side = "left"         # decoder-only: left-pad so gen aligns
+         model = AutoModelForCausalLM.from_pretrained(
+             MODEL_PATH,
+             torch_dtype=torch.bfloat16,   # NEVER omit → default fp32 = 2× VRAM = OOM
+             device_map="cuda:0",          # single device, NOT "auto"
+             local_files_only=True,        # offline node: NO HuggingFace hub download
+             trust_remote_code=True,
+         )
+         model.eval()
+         ...
+         BATCH_SIZE = 16                   # tune to VRAM; bounded, not 1, not all-N
+         prompts = [tok.apply_chat_template(m, add_generation_prompt=True,
+                                            tokenize=False) for m in all_msgs]
+         for i in range(0, len(prompts), BATCH_SIZE):   # loop over BATCHES
+             enc = tok(prompts[i:i + BATCH_SIZE], return_tensors="pt",
+                       padding=True).to(model.device)
+             with torch.inference_mode():  # NEVER omit → grad buffers accumulate → OOM
+                 out = model.generate(**enc, max_new_tokens=N, do_sample=False,
+                                      eos_token_id=tok.eos_token_id,
+                                      pad_token_id=tok.pad_token_id or tok.eos_token_id)
+
+     **Pre-push checklist — every line YES, or you OOM/crash on the remote:**
+     1. Model + tokenizer loaded **exactly once**, outside the per-problem
+        loop (grep your code: `from_pretrained` must NOT be inside any `for`).
+     2. `torch_dtype` is set to the Stage 5 dtype (bf16) — never left to
+        default (fp32 doubles VRAM).
+     3. `device_map="cuda:0"` (or the spec's value) — never `"auto"`.
+     4. `MODEL_PATH` is the exact **local** path from Stage 5
+        (`/mnt/data0/hf_models/...`), not a hub id like `"Qwen/..."` —
+        `local_files_only=True` so a wrong path fails loud instead of
+        silently downloading.
+     5. Every `model.generate()` is inside `with torch.inference_mode():`.
+     6. Inputs are moved to `model.device` (not a hardcoded `"cuda"`).
+     7. Inference is **batched**, not one-example-at-a-time. Prefer vLLM
+        (`llm.chat(all_convs)` — continuous batching handles VRAM for you).
+        On the HF fallback, use **bounded micro-batches** (left-pad +
+        `attention_mask`, a fixed `BATCH_SIZE`) — never a `for problem in
+        problems: model.generate(...)` loop (sequential = hours; static
+        gate ERROR), and never one unbounded giant batch of all N (KV-cache
+        for N×long sequences OOMs). Bounded batches are the middle path.
+     8. `eos_token_id` + `pad_token_id` are passed (clean stop).
+
+     Record "GPU inference checklist: PASS" in the receipt (§0.6 area). The
+     Stage 6a critic spot-checks these; a `from_pretrained` inside a loop,
+     a missing `torch_dtype`, `device_map="auto"`, or per-example
+     `model.generate()` in a loop is a D-CODE deviation.
 
 4. **Output format** —
    - Use `JSONL` output (one record per problem/seed/condition cell)
@@ -477,6 +662,25 @@ python3 -m pytest -q test_experiment.py              # pure-logic tests
 | pytest fails | Read the assertion. Decide: is the CODE wrong (fix `experiment.py`) or is the TEST wrong (you mis-stated the expected value)? Fix the right one with `Edit`, re-run. |
 | import error in the test | Your pure logic is NOT import-safe (it ran GPU/dataset code at import). Move that work behind `__main__` / into `run()`. This is the Phase 2.5 self-check #6 failing late — fix it now. |
 | static gate `[error]` | Fix the syntax/undefined-name, re-run. |
+
+### Step 3.5.3 — Failure-mode router (classify, then fix the RIGHT way)
+
+A "test failed" is not one thing. Before you edit, **classify** the
+failure and apply the matching fix — treating every failure the same
+wastes iterations (e.g. re-running on a timeout, or rewriting logic on
+an import error). Tag the dominant failure in this round and act:
+
+| Failure tag | Signal | Targeted fix (do this, not a blind rewrite) |
+|---|---|---|
+| **syntax** | `SyntaxError`, `IndentationError`, static-gate `[error]` parse | Minimal edit to the exact line; do NOT touch logic. Re-gate. |
+| **import** | `ImportError` / `ModuleNotFoundError` at test import | Two sub-cases: (a) your pure logic ran GPU/dataset code at import → move it behind `__main__`/`run()` (Phase 2.5 #6); (b) a genuinely missing dep → it's pre-installed on the remote, so guard the import or move it into the function, don't `pip install` locally. |
+| **test** (assertion) | `AssertionError`, wrong value | Decide CODE-wrong vs TEST-wrong: recompute the expected value by hand. If the code is wrong, fix the function; if your hand-graded expectation was wrong, fix the test. Never weaken the assertion to pass. |
+| **lint** | ruff/pyflakes warning (non-error) | Fix only if cheap (unused import, undefined name). Style nits don't block — proceed. |
+| **timeout** | the test itself hangs / >30s | Your pure-logic test must NOT do GPU/dataset/network work. If it does, you tested the wrong layer — move the heavy call out and test only the pure function. |
+| **runtime** | `TypeError`/`KeyError`/`ValueError` in the function under test | A real logic bug the test caught — exactly what this loop is for. Fix the function, re-run. |
+
+Pick the tag, apply its row, re-run. One classified fix per iteration
+beats shotgun edits.
 
 **Hard cap: 3 iterations.** This is a loop, not an infinite refine.
 After 3 rounds:
@@ -621,6 +825,114 @@ the failure in the receipt's "Push status" column as `❌ <error>`
 and STOP — the critic will mark D4 as FAIL and trigger retry. Better
 to fail loud here than to ship a missing file.
 
+### Step 4.5 — Environment designation + dependency pre-flight (MANDATORY)
+
+Your entrypoint will execute via `run_local` **in a conda environment on
+the host** — NOT inside the docker runtime image. The image's package
+list (vLLM etc.) does NOT apply to run_local. Two hard facts learned
+from a double-failure (run 284fe7b69d4f burned all retries on this):
+
+1. **The default env is bare.** A bare `python ...` entrypoint runs in
+   the default env, which may lack vLLM entirely. Every entrypoint MUST
+   begin with `source <conda_bin>/activate <env> && ...`.
+2. **`fast_query_server_info` only tracks torch / vllm / flash_attn per
+   env. It is NOT a package inventory.** Never infer that `datasets`,
+   `scipy`, `pandas`, … are missing (or present) from it — that exact
+   wrong inference made the previous run designate a `vllm`-only env
+   while two fully-stocked envs sat unused.
+
+So BEFORE you write the receipt's §4 entrypoint, run a **dependency
+pre-flight probe**: one `run_local` CPU job (seconds, $0) that checks
+every top-level import your pushed code makes, across the candidate
+envs:
+
+```bash
+DEPS='"vllm","datasets","transformers","scipy","numpy"'   # ← every top-level import in YOUR code
+bash "$SKILL_DIR/scripts/fast_submit.sh" --config "$SKILL_DIR/assets/base.conf.json" -c \
+  'for e in base r3l opsd infra; do echo "=== env: $e ==="; source /home/zsgpu/miniconda3/bin/activate $e && python -c "import importlib.util as u; [print(m, (\"OK\" if u.find_spec(m) else \"MISSING\")) for m in ['"$DEPS"']]"; done'
+# poll fast_query_exp_status until succeeded, read log_tail
+```
+
+Designate the env where **every** dep is OK (prefer one with
+`flash_attn` for inference workloads). Paste the probe's per-env matrix
+into the receipt §4 under "Environment designation".
+
+**If NO conda env has all deps → BUILD the environment yourself: the
+`uv-venv` strategy** (issue #117 — typical for non-LLM / CPU
+experiments: Bayesian optimization, classical ML, simulation, whose
+stacks like gpytorch/botorch are not preinstalled anywhere).
+
+**Iron rule: the environment is fully built and import-verified BEFORE
+any experiment run.** The runner installs NOTHING at experiment time —
+it receives a ready `.venv` and just executes. All of this uses the
+existing fast_submit run_local path (zero infra changes). Verified
+live: `run_479a2234f20a` (uv venv + install + run works; host has uv,
+pypi reachable) and `run_322bfa5384e0`→`run_c4e98cd53fa2` (the `.venv`
+persists in the remote workspace across runs).
+
+Your obligations, in order:
+
+1. **Ship a pinned `requirements.txt`** next to your code and push it
+   in Phase 4 like any other file. Every top-level import in your code
+   maps to a pinned line. For torch-using CPU experiments note
+   `# cpu-only` at the top (the env-build keeps torch on the CPU
+   index — no multi-GB CUDA download).
+2. **Submit the ENV-BUILD run** (after the Phase 4 push, before the
+   receipt): copy `assets/uv_venv_local.yaml` (from the
+   experiment-infra skill), fill `<project_id>/<iter_id>` and the
+   import list (EVERY top-level import your code makes), submit via
+   `fast_submit.sh --yaml`, poll to `succeeded`, and confirm
+   `"env_ready": true` in the log_tail. This builds
+   `omc/<project_id>/<iter_id>/.venv` once; it persists for all
+   subsequent runs.
+3. Receipt §4 says:
+   - `env_strategy: uv-venv`
+   - `env_build_run: run_...` + the env-build RESULT_JSON (the proof
+     the env exists and imports verified)
+   - `gpu_required: false | true` (false → runner skips the GPU pick)
+   - smoke/full entrypoints written as `.venv/bin/python
+     experiment.py ...` — NO conda prefix, NO install steps.
+
+If the env-build run fails (a dep cannot resolve / needs a GPU build
+unavailable on the host), fix requirements.txt and re-submit the
+env-build; only `submit_result(status: error)` if it genuinely cannot
+work. Do NOT hand the runner an unbuilt or unverified environment.
+
+### Step 4.6 — CPU experiments: run the smoke YOURSELF before the receipt (MANDATORY when `gpu_required: false`)
+
+The Phase 3.5 local test loop deliberately tests only pure logic — for
+GPU/LLM experiments the model classes can't run locally. **For a CPU
+experiment that calibration is wrong: the model stack itself is
+runnable, and skipping it leaves the main failure surface untested.**
+Real case (run 0fdfc2b8223e): 11 pure-logic tests passed, but the
+GPyTorch `ExactGP` subclass was missing `forward()` — the very first
+model call raised `NotImplementedError`, the 6b smoke died in 3 s, and
+two full 6a→6b→critic cycles burned on a bug a single local model call
+would have caught.
+
+So when `gpu_required: false`, after the environment is designated
+(Step 4.5) and the code is pushed (Phase 4), **submit the smoke
+entrypoint yourself** — one run_local, the exact smoke command from
+your receipt draft, in the designated env:
+
+```bash
+bash "$SKILL_DIR/scripts/fast_submit.sh" --config "$SKILL_DIR/assets/base.conf.json" -c \
+  "source /home/zsgpu/miniconda3/bin/activate <env> && cd omc/<project_id>/<iter_id> && <smoke command>"
+# (uv-venv strategy: use `.venv/bin/python <smoke command>` instead of conda activation)
+# poll to terminal; require status=succeeded AND a parseable RESULT_JSON in log_tail
+```
+
+- Smoke `succeeded` + RESULT_JSON → paste the run_id + RESULT_JSON into
+  receipt §4 under `smoke_validated_by_6a: run_...`. The 6b runner will
+  see this, SKIP its own smoke, and go straight to the pilot/full run.
+- Smoke FAILED → that is YOUR bug, caught in YOUR loop where it is
+  cheapest. Route it through the Step 3.5.3 failure-mode router (a
+  runtime `NotImplementedError`/`TypeError` = fix the class, re-push,
+  re-smoke). Do NOT write the receipt until the smoke passes.
+
+(GPU experiments keep the existing division: the runner smokes first on
+the GPU it picked — 6a cannot cheaply do that.)
+
 ## Phase 5 — Write the implementation receipt (MANDATORY, ALWAYS)
 
 **This step is non-negotiable.** The Stage 6b runner reads
@@ -693,14 +1005,27 @@ file + function implements it. Anything in the contract not in a
 row here is a spec gap.
 
 ## 4. Runnable entrypoint
-The command the runner (Stage 6b) should invoke, with the
-per-project remote subdir prefix:
+
+### Environment designation (REQUIRED — Step 4.5 evidence)
+- `env_strategy`: `<conda env name, e.g. r3l>` | `uv-venv`
+- `gpu_required`: true | false
+- Pre-flight probe run_id: `run_...`
+- Per-env import matrix from the probe log (paste it)
+- If `uv-venv`: `requirements`: `omc/<project_id>/<iter_id>/requirements.txt`
+  (pinned, pushed in Phase 4; `# cpu-only` header if torch should come
+  from the CPU index), `env_build_run`: `run_...` (the SUCCEEDED
+  env-build with `"env_ready": true` — paste its RESULT_JSON), and the
+  entrypoints below are `.venv/bin/python experiment.py ...` — the env
+  is already built; the runner installs nothing.
+
+The command the runner (Stage 6b) should invoke, with conda
+activation and the per-project remote subdir prefix:
 
   ### Smoke (runner runs this FIRST, ≤5 min)
-    cd omc/<project_id>/<iter_id> && python experiment.py --smoke --benchmark gsm8k --seed 42
+    source /home/zsgpu/miniconda3/bin/activate <env> && cd omc/<project_id>/<iter_id> && python experiment.py --smoke --benchmark gsm8k --seed 42
 
   ### Full (runner runs this only if smoke succeeded)
-    cd omc/<project_id>/<iter_id> && python experiment.py --benchmark gsm8k --k 5 --seed 42 ...
+    source /home/zsgpu/miniconda3/bin/activate <env> && cd omc/<project_id>/<iter_id> && python experiment.py --benchmark gsm8k --k 5 --seed 42 ...
 
 State explicitly what `--smoke` shrinks (e.g. "5 problems instead of
 1319, otherwise identical code path, identical schema, expected

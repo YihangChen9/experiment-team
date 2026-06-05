@@ -41,6 +41,49 @@ entrypoint" tells you the exact command Stage 6a wants run.
 If `stage6_implementation_receipt.md` is missing, jump straight to step 3
 and write a report with `status: blocked`, then step 4.
 
+## Step 0.5 — Pick a FREE GPU for run_local (MANDATORY for GPU jobs)
+
+The `run_local` infra shares one multi-GPU node, and its default
+placement can pin your job to a **busy** GPU even when others are
+idle — a real failure (run 1c9befd9a898): the job landed on GPU 1
+(7.7 GB free) and OOM'd at `model.generate()` while GPUs 4–7 sat
+**completely idle** (79 GB free each). A 7B model needs ~14 GB; that
+OOM is pure mis-placement, not a real resource shortage.
+
+So **you** pick the GPU. Query the node, choose a GPU with enough
+free memory, and pin the run to it with `CUDA_VISIBLE_DEVICES` in the
+run_command:
+
+```bash
+# Query per-GPU free memory and pick the emptiest one.
+SRV=$(bash "$SKILL_DIR/scripts/fast_query_server_info.sh" 2>/dev/null)
+GPU=$(echo "$SRV" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+# Walk to setup.machine.gpu[]; pick the gpu_index with the most free GB.
+gpus = (((d.get("setup") or {}).get("machine") or {}).get("gpu")) or []
+best = max(gpus, key=lambda g: g.get("memory_free_gb", 0), default=None)
+# Need ~14 GB for a 7B model in bf16 (scale up for bigger models).
+if best and best.get("memory_free_gb", 0) >= 16:
+    print(best["gpu_index"])
+else:
+    print("")   # no GPU has enough free memory
+')
+echo "PICKED_GPU=$GPU"
+```
+
+- A number (`PICKED_GPU=4`) → prepend `CUDA_VISIBLE_DEVICES=$GPU ` to
+  **every** run_command you submit below (smoke AND full). With
+  `CUDA_VISIBLE_DEVICES` set, the code's `device_map="auto"` /
+  `cuda:0` maps to that physical GPU.
+- Empty (`PICKED_GPU=`) → **no GPU has ≥16 GB free.** Do NOT submit
+  blindly (it will OOM). Skip to Step 3, write the report with
+  `status: blocked_no_gpu`, paste the `fast_query_server_info` output
+  as evidence, and stop. This is an infra-capacity block, not a code
+  bug — the engine surfaces it to the CEO rather than burning retries.
+
+For non-GPU experiments (pure CPU), skip this step.
+
 ## Step 1 — Submit (one `fast_submit.sh` per runner row)
 
 For each row whose Skill column contains `experiment_runner`, run ONE
@@ -57,13 +100,73 @@ runner uses this as a 5-minute proof-of-pipeline before committing
 hours of GPU to a full run that may hang on an architectural bug
 (wrong worker pool config, broken loader, hung dependency).
 
+**Exception — smoke already validated by 6a**: if receipt §4 carries
+`smoke_validated_by_6a: run_...` (CPU experiments — 6a ran the smoke
+itself per its Step 4.6), verify that run_id reads `succeeded` via
+`fast_query_exp_status` and SKIP your own smoke: go straight to the
+pilot/full submission. Re-smoking proven code just doubles the cycle.
+If the run_id does NOT read succeeded, treat the receipt as invalid
+(`blocked_smoke_failure`, Step 3) — do not improvise.
+
+**Use the receipt's "Runnable entrypoint" command VERBATIM.** Copy the
+smoke command exactly as Stage 6a wrote it in
+`stage6_implementation_receipt.md` — do NOT invent or add flags
+(`--output-dir`, `--results`, `--save`, …). The code only accepts the
+flags 6a actually defined; an extra flag triggers
+`argparse: unrecognized arguments` and the run fails before it starts.
+If the receipt's entrypoint looks wrong or incomplete, that is a Stage 6a
+bug — report it (Step 3, `status: blocked_smoke_failure`), do not
+work around it by guessing flags.
+
+**Which submission shape? Read the receipt §4 "Environment designation":**
+
+- `env_strategy: <conda env name>` (LLM / GPU experiments) → the `-c`
+  one-liner below, conda activation included in the receipt's command.
+- `env_strategy: uv-venv` (non-LLM / CPU experiments — BO, classical ML,
+  simulation; issue #117) → **the environment is ALREADY BUILT**: Stage
+  6a ran a dedicated env-build (`env_build_run` in the receipt, with
+  `"env_ready": true`) that left a verified
+  `omc/<project_id>/<iter_id>/.venv` in the workspace (persistence
+  verified: `run_322bfa5384e0`→`run_c4e98cd53fa2`). You install
+  NOTHING. Submit smoke/full as plain `-c` one-liners using the
+  receipt's `.venv/bin/python ...` entrypoint VERBATIM. If the receipt
+  says `gpu_required: false`, skip Step 0.5 entirely — no
+  `CUDA_VISIBLE_DEVICES` prefix.
+
+  Guards:
+  - Receipt has `env_strategy: uv-venv` but NO succeeded
+    `env_build_run` → that's a Stage 6a contract violation. Report
+    `blocked_env_not_built` (Step 3), do not build it yourself by
+    guessing.
+  - Entrypoint fails with `.venv/bin/python: No such file` (workspace
+    was wiped after the env-build) → rebuild ONCE with
+    `assets/uv_venv_local.yaml` exactly as 6a configured it (same
+    requirements.txt), then retry the smoke. If the rebuild fails,
+    report `blocked_env_rebuild_failed` with both run_ids.
+
 ```bash
-# Step 1a — submit the smoke run first
+# Step 1a (conda path) — submit the smoke run first.
+# SMOKE_CMD = the receipt's "Runnable entrypoint (smoke)" VERBATIM, with
+# CUDA_VISIBLE_DEVICES=$GPU (from Step 0.5) prepended so it lands on the
+# free GPU you picked. Do NOT add other flags the receipt didn't list.
+SMOKE_CMD="cd omc/<project_id>/<iter_id>/ && CUDA_VISIBLE_DEVICES=$GPU <exact smoke command from receipt>"
 SMOKE_RID=$(bash "$SKILL_DIR/scripts/fast_submit.sh" \
   --config "$SKILL_DIR/assets/base.conf.json" \
-  -c "cd omc/<project_id>/<iter_id>/ && python experiment.py --smoke <other args>" \
+  -c "$SMOKE_CMD" \
   2>&1 | tee /tmp/submit_smoke.log | grep -oE 'run_[a-f0-9]+' | head -1)
 echo "SMOKE_RID=$SMOKE_RID"
+```
+
+```bash
+# Step 1a (uv-venv path) — env already built by 6a; plain -c, zero installs.
+SMOKE_CMD="cd omc/<project_id>/<iter_id>/ && <receipt smoke entrypoint VERBATIM, e.g. .venv/bin/python experiment.py --smoke --seed 42>"
+SMOKE_RID=$(bash "$SKILL_DIR/scripts/fast_submit.sh" \
+  --config "$SKILL_DIR/assets/base.conf.json" \
+  -c "$SMOKE_CMD" \
+  2>&1 | tee /tmp/submit_smoke.log | grep -oE 'run_[a-f0-9]+' | head -1)
+echo "SMOKE_RID=$SMOKE_RID"
+# Full run: same shape with the receipt's full entrypoint. The .venv is
+# the one env-build created — no setup block, no installs, no conda.
 ```
 
 Then poll it (use the same single-bash-with-sleep pattern from Step
@@ -97,6 +200,36 @@ done
   attach the smoke run_id + log_tail. The Stage 6a Code Writer needs
   to fix the implementation before any retry burns more GPU. This is
   the safety net for hung-pipeline bugs.
+
+  **DO NOT re-submit the smoke run with different args to "fix" it
+  yourself.** If the failure is a code/interface bug — `unrecognized
+  arguments`, `ImportError` / `ModuleNotFoundError`, `SyntaxError`,
+  `AttributeError`, `error: argument`, a non-zero argparse exit — that is
+  a Stage 6a implementation bug, not something you patch by guessing
+  flags. Submitting variant commands in a loop burns your step budget
+  and ends in an empty (stub) result, which fails the whole stage. Submit
+  **at most ONE** smoke run; on an impl-bug failure go straight to Step 3,
+  set `status: blocked_smoke_failure`, and in the report state plainly
+  "impl bug: <the error>" so the engine routes the retry back to Stage 6a
+  to rebuild. Writing the honest report is ALWAYS cheaper than thrashing.
+
+  One exception-shaped addition (NOT a smoke re-submission): **if the
+  failure is `ModuleNotFoundError` / `ImportError`** (a missing package
+  in the entrypoint's conda env), run the cheap **env probe** — one CPU
+  run_local, seconds, $0 — and paste its per-env matrix into your
+  report, so the 6a retry can designate a working env in ONE hop
+  instead of guessing (a previous run burned all its retries fixing one
+  missing package per attempt):
+
+  ```bash
+  # Replace the module list with the imports the traceback names + the
+  # usual stack (vllm, datasets, transformers, scipy, numpy).
+  bash "$SKILL_DIR/scripts/fast_submit.sh" --config "$SKILL_DIR/assets/base.conf.json" -c \
+    'for e in base r3l opsd infra; do echo "=== env: $e ==="; source /home/zsgpu/miniconda3/bin/activate $e && python -c "import importlib.util as u; [print(m, (\"OK\" if u.find_spec(m) else \"MISSING\")) for m in [\"vllm\",\"datasets\",\"transformers\",\"scipy\",\"numpy\"]]"; done'
+  ```
+
+  Do NOT infer package presence from `fast_query_server_info` — it only
+  tracks torch / vllm / flash_attn per env, nothing else.
 
 ## Step 1b' — Smoke quality check (don't trust "succeeded")
 
@@ -171,10 +304,11 @@ quality gate would have caught this in 5 minutes instead of burning
 hours on a doomed full run.
 
 ```bash
-# Step 1c — submit the full run, only if SMOKE_OK AND QUALITY_OK
+# Step 1c — submit the full run, only if SMOKE_OK AND QUALITY_OK.
+# Same CUDA_VISIBLE_DEVICES=$GPU pin as the smoke run.
 RUN_ID_T1=$(bash "$SKILL_DIR/scripts/fast_submit.sh" \
   --config "$SKILL_DIR/assets/base.conf.json" \
-  -c "cd omc/<project_id>/<iter_id>/ && python experiment.py <other args>" \
+  -c "cd omc/<project_id>/<iter_id>/ && CUDA_VISIBLE_DEVICES=$GPU python experiment.py <other args>" \
   2>&1 | tee /tmp/submit_t1.log | grep -oE 'run_[a-f0-9]+' | head -1)
 echo "RUN_ID_T1=$RUN_ID_T1"
 ```

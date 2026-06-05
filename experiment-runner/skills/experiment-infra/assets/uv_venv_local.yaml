@@ -1,0 +1,55 @@
+# uv_venv_local.yaml — ENV-BUILD template for non-LLM / CPU experiments
+# (issue #117: BO / classical-ML / optimization / simulation whose deps are
+# not preinstalled in any host conda env).
+#
+# PRINCIPLE: the environment is FULLY BUILT AND VERIFIED **before** any
+# experiment run. Stage 6a submits THIS yaml once (after pushing code +
+# requirements.txt); the experiment runs (6b smoke/full) then execute with
+# plain `.venv/bin/python ...` and install NOTHING. All of this uses the
+# existing fast_submit run_local path — zero infra changes.
+#
+# Verified live:
+#   run_479a2234f20a — uv venv + uv pip install + run (host has uv, pypi OK)
+#   run_322bfa5384e0 → run_c4e98cd53fa2 — the .venv persists in the remote
+#   workspace across runs (second run used it with NO setup block)
+#
+# Fill the <placeholders>, submit with:
+#   bash scripts/fast_submit.sh --config assets/base.conf.json --yaml <this file>
+# Poll to `succeeded` and look for `"env_ready": true` in log_tail. That
+# run_id is the receipt's `env_build_run` evidence.
+#
+# Notes:
+# - run_local concatenates setup+run into ONE bash script; cwd persists.
+# - CPU torch: keep the --index-url line so a CPU-only experiment doesn't
+#   pull the multi-GB CUDA torch. Delete it if torch is not needed.
+# - Idempotent: re-running over an existing .venv is safe.
+
+name: uv-venv-env-build
+
+resources:
+    cpus: 4+
+
+setup: |
+    set -e
+    export UV_LINK_MODE=copy
+    cd omc/<project_id>/<iter_id>
+    uv venv .venv --python 3.12
+    # CPU-only torch first (delete if the experiment does not use torch):
+    uv pip install --python .venv/bin/python torch --index-url https://download.pytorch.org/whl/cpu
+    uv pip install --python .venv/bin/python -r requirements.txt
+
+run: |
+    # Verify EVERY top-level import your experiment makes — edit the list.
+    .venv/bin/python - <<'PY'
+    import importlib, json
+    mods = ["<mod1>", "<mod2>", "<mod3>"]   # e.g. torch, gpytorch, botorch, numpy
+    missing = []
+    for m in mods:
+        try:
+            importlib.import_module(m)
+        except Exception as e:
+            missing.append(f"{m}: {e}")
+    print("=== RESULT_JSON:", json.dumps(
+        {"env_ready": not missing, "verified": mods, "missing": missing}), "===")
+    raise SystemExit(1 if missing else 0)
+    PY
