@@ -84,16 +84,36 @@ The pin file lists:
 - `Adaptation surface:` — file-by-file list of allowed changes with LOC estimate
 - `Test command:` — the upstream's own test suite that must pass
 
-Execute:
+Clone + checkout with the **deterministic helper** — do NOT hand-run git:
 
 ```bash
 cd <project_workspace>
-git clone --depth 1 <Repository> upstream
-cd upstream
-git fetch --depth 1 origin <Commit>
-git checkout <Commit>
+bash "$SKILL_DIR/scripts/stage6_pin_checkout.sh" "<Repository>" "<Commit>" upstream
+```
 
-# Verify license matches the pin (refuse to proceed on mismatch)
+> 🚫 **Do NOT improvise `git clone --depth 1` + `git fetch origin <SHA>` +
+> `git checkout <SHA>` by hand.** That sequence is the **single biggest
+> cause of Stage 6a death**: most servers reject fetching an arbitrary SHA
+> (`fatal: couldn't find remote ref <sha>`), and a shallow clone has no
+> parents, so any history op (`<pinned>..HEAD`, `git log <sha>~5..`) also
+> fails. Agents then thrash on ad-hoc git for ~29 turns, exhaust the turn
+> budget, and the run dies with an empty final turn. The script does a
+> **full clone** + robust checkout in ONE call — use it.
+
+Read the script's **last stdout line** (`STAGE6_CHECKOUT: ...`) and branch:
+
+| Status line | Meaning | What to do |
+|---|---|---|
+| `OK commit=<sha>` | Cloned + checked out the pinned commit | Continue. |
+| `ALREADY_AT commit=<sha>` | Retry — `upstream/` was already cloned/checked out | Continue; do not re-clone (Step 0.0). |
+| `PIN_DEVIATION commit=<req> resolved=<head>` | Pinned commit unreachable; resolved to `origin/HEAD` | Continue, and record `pin_deviation: commit <req> unreachable, resolved to <head>` in the receipt (this is the Step 0.3.5 case-1 outcome, now handled for you). |
+| `FATAL <reason>` | Clone failed / repo unusable | Stop. `submit_result(status: error, ...)` quoting the reason. |
+
+```bash
+cd upstream
+
+# Verify the license matches the pin (the script already printed LICENSE_HEAD:
+# above — refuse to proceed on mismatch).
 head -3 LICENSE || head -3 LICENSE.md || (echo "FATAL: pin claims MIT/Apache but no LICENSE file" && exit 2)
 
 # Run upstream's own tests on a clean checkout BEFORE patching
@@ -194,16 +214,18 @@ Classify the post-patch result with the same table as Step 0.1:
 ### Step 0.3.5 — If the pin itself is BROKEN (hallucinated commit / files)
 
 Distinct from failing tests: sometimes the pin names a commit that
-does not exist (`git fetch origin <sha>` → "couldn't find remote ref")
-or an adaptation-surface file that is absent from the tree (real case:
-pin named `simple_evals/gsm8k_eval.py`; the repo only has
-`mgsm_eval.py`). Stage 5 hallucinated — handle it pragmatically, in
+does not exist or an adaptation-surface file that is absent from the
+tree (real case: pin named `simple_evals/gsm8k_eval.py`; the repo only
+has `mgsm_eval.py`). Stage 5 hallucinated — handle it pragmatically, in
 this order:
 
-1. **Commit unreachable but repo + adaptation surface valid** → resolve
-   to `origin/HEAD`, document the deviation in the receipt
-   (`pin_deviation: commit <sha> unreachable, resolved to <head_sha>`),
-   and continue the pin path.
+1. **Commit unreachable but repo + adaptation surface valid** → **already
+   handled for you**: `stage6_pin_checkout.sh` (Step 0.1) resolves to
+   `origin/HEAD` and prints `PIN_DEVIATION commit=<req> resolved=<head>`.
+   Just copy that into the receipt as
+   `pin_deviation: commit <req> unreachable, resolved to <head>` and
+   continue the pin path. Do NOT hand-run `git fetch origin <sha>` to
+   "double-check" — that is the thrash trap Step 0.1 exists to avoid.
 2. **Named files absent / adaptation surface impossible** → the pin is
    unusable. Take the from-scratch path (Step 0.4) and record
    `path_taken: from-scratch (pin broken: <one-line reason>)` in the
