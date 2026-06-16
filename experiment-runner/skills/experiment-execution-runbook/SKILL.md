@@ -397,6 +397,13 @@ Template (copy verbatim, fill placeholders, save with `write()`):
 ```markdown
 # Stage 6 — Auto Experiment Results
 
+## RUNS (machine-readable — MANDATORY, do not omit, do not reformat)
+
+```runs
+<run_id>  <status>
+<run_id>  <status>
+```
+
 ## Tasks executed (Path A — remote runner)
 
 ### T<N> — <verbatim task description from stage5_assignments.md>
@@ -436,6 +443,26 @@ Template (copy verbatim, fill placeholders, save with `write()`):
 If you don't have data for a field, write `unknown` or `N/A`. **Do not
 omit fields and do not skip the file.** A partial file with honest
 "unknown" values is fine; an empty file is auto-REJECT.
+
+### The ` ```runs ` block is how the engine sees your runs — get it right
+
+The engine parses the **` ```runs ` fenced block ONLY** to decide whether
+real experiments exist and whether any are still pending. It does NOT
+reliably parse run_ids out of your prose, tables, or `- run_id:` lines —
+those vary too much run-to-run and get missed (a clean experiment with two
+`succeeded` runs was discarded because the parser couldn't read the prose).
+So:
+
+- Emit **one line per submitted run**, `<run_id>  <status>`, whitespace-
+  separated, inside a fence whose info-string is exactly `runs`.
+- `status` must be one of: `succeeded`, `partial_success`, `failed`,
+  `rejected`, `still_running`, `blocked`.
+- List **every** run you submitted — including a still-running one (so the
+  engine waits) and a failed/superseded one. Do NOT list runs you only
+  mention in prose narrative (e.g. an OOM run you later replaced) unless you
+  want the engine to track them.
+- If you submitted zero runs, emit an empty ` ```runs ` block (the engine
+  reads that as an authoritative "no runs", not as "parse failed").
 
 ## Step 4 — submit_result (MANDATORY, AFTER step 3)
 
