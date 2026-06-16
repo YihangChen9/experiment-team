@@ -231,6 +231,37 @@ done
   Do NOT infer package presence from `fast_query_server_info` — it only
   tracks torch / vllm / flash_attn per env, nothing else.
 
+  Another exception (placement retry, NOT arg-guessing): **if the failure is
+  an OOM** — `torch.OutOfMemoryError`, `CUDA out of memory`,
+  `cudaErrorMemoryAllocation`, or the job clearly landed on a GPU another
+  process is resident on — that is an **infra placement** problem, not a
+  Stage-5 arg or Stage-6a code bug. The model fits; it just went to the wrong
+  card (the GPU you picked in Step 0.5 may have since gone busy, or your own
+  earlier smoke process is still resident on it). The fix is to MOVE the job,
+  not to change the experiment. Recover **once**:
+
+  1. Free a device your own prior run is holding, then re-pick:
+     ```bash
+     bash "$SKILL_DIR/scripts/fast_cancel.sh" "$RID" || true   # release the OOM'd run
+     # Re-run the Step 0.5 picker — the emptiest GPU may have changed.
+     SRV=$(bash "$SKILL_DIR/scripts/fast_query_server_info.sh" 2>/dev/null)
+     GPU=$(echo "$SRV" | python3 -c 'import sys,json; d=json.load(sys.stdin); g=(((d.get("setup") or {}).get("machine") or {}).get("gpu")) or []; b=max(g,key=lambda x:x.get("memory_free_gb",0),default=None); print(b["gpu_index"] if b and b.get("memory_free_gb",0)>=16 else "")')
+     echo "REPICKED_GPU=$GPU"
+     ```
+  2. If `REPICKED_GPU` is a number, re-submit the **SAME** command (identical
+     args — only the `CUDA_VISIBLE_DEVICES=$GPU` pin changes) **once**.
+  3. If the picker returns empty (no GPU has ≥ the model's footprint free) OR
+     the re-placed run OOMs **again**, stop and write the report with
+     `status: blocked_oom`, both run_ids, and the `server_info` GPU matrix.
+     State plainly whether it was mis-placement (other cards were free) or a
+     genuine capacity shortage. If the model genuinely does not fit even on
+     the emptiest card, say so — the 6a retry then lowers the in-code memory
+     footprint (`gpu_memory_utilization`, batch size, or `max_model_len`),
+     which is the code writer's job, not yours.
+
+  This is exactly ONE extra submission with the SAME args on a verified-free
+  GPU — not the forbidden variant-command loop.
+
 ## Step 1b' — Smoke quality check (don't trust "succeeded")
 
 A smoke run that returns ``succeeded`` can still produce **garbage
@@ -351,7 +382,12 @@ done
 ```
 
 After the bash returns, look at the last echo line:
-- `TERMINAL status=succeeded|failed|rejected` → go to step 3.
+- `TERMINAL status=succeeded|failed|rejected` → go to step 3. **If `failed`
+  with an OOM** (`CUDA out of memory` / `torch.OutOfMemoryError`, often
+  because the just-finished smoke process is still resident on the card),
+  apply the **OOM placement-retry** from Step 1b' ONCE — `fast_cancel.sh` the
+  dead run, re-pick the emptiest GPU, re-submit the SAME full command on it —
+  before falling back to `status: blocked_oom`.
 - `BATCH_EXPIRED status=still_running` → **exit the polling loop now**.
   Do **NOT** issue another 9-min poll batch. Go straight to step 3,
   write the report with `status: still_running` and the captured
