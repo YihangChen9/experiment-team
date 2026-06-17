@@ -25,6 +25,32 @@ failure mode is an LLM polling for 9 minutes, then quietly stopping
 without ever calling `write()` or `submit_result()`. Don't be that
 LLM.
 
+## ⛔ NEVER run the experiment in your own bash — only `fast_submit` run_ids count
+
+Your `Bash` tool is for the `fast_*.sh` infra scripts and inspecting files —
+**NOT for running the experiment.** The ONLY valid evidence is a remote
+`run_id` from `fast_submit.sh` (→ `run_local` on the infra), verifiable with
+`fast_query_exp_status.sh <run_id>`. Running `python ... benchmark.py`
+yourself produces numbers the Stage 6 critic **auto-REJECTs** (no run_id), and
+you must NOT fabricate run_ids to cover it.
+
+This killed run bc80d24f7f8b: the runner ran the CPU experiment locally, got
+real numbers, but the report read "remote run pending / local only" → REJECT,
+3× → stage failed. Don't repeat it.
+
+Rules:
+- Every result in `stage6_experimentalist.md` MUST cite a `fast_submit`
+  run_id you verified terminal. No local runs, ever.
+- **CPU experiments are NOT an exception** — they go through `fast_submit`
+  (`run_local`) too. For `gpu_required:false` / `env_strategy:uv-venv`:
+  submit the env-build, the smoke, and the full run **each EXACTLY ONCE** via
+  `fast_submit`, record the three run_ids, and **never re-submit a run that
+  already `succeeded`** (re-submitting is the thrash that produced 8+ run_ids
+  and a confused report). The `.venv` 6a built lives on the REMOTE workspace,
+  not your machine.
+- Finalize the report from those remote run_ids + their
+  `fast_query_exp_status` output — never from a local run or "pending".
+
 ## Step 0 — Boilerplate (one-shot setup)
 
 ```
